@@ -10,6 +10,7 @@ clears the relevant cache before returning so the next read is fresh.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -85,7 +86,19 @@ def get_supabase() -> Client:
     # is checked the same way but only its length is logged.
     print(f"[get_supabase] SUPABASE_URL (hardcoded) repr: {url!r}", flush=True)
     print(f"[get_supabase] SUPABASE_URL length: {len(url)}", flush=True)
-    print(f"[get_supabase] SUPABASE_SERVICE_ROLE_KEY length after strip(): {len(key)}", flush=True)
+
+    # A fingerprint, not the key: a 401 Invalid API key means the stored
+    # value is wrong somehow (stale, from a different/rotated project key,
+    # truncated, etc.), but the key itself is a full-access credential that
+    # must never be hardcoded into source or printed in full — even in
+    # private logs. This is enough to compare "is Cloud loading the same
+    # key as local" without ever exposing or materializing the real value.
+    key_fingerprint = hashlib.sha256(key.encode()).hexdigest()[:12]
+    print(
+        f"[get_supabase] SUPABASE_SERVICE_ROLE_KEY length={len(key)} "
+        f"prefix={key[:6]!r} suffix={key[-4:]!r} sha256={key_fingerprint}",
+        flush=True,
+    )
 
     # .strip() only trims the two ends; it can't catch whitespace or a
     # newline pasted into the *middle* of the value (e.g. a secrets-editor
