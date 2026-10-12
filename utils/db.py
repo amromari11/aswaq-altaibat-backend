@@ -10,6 +10,7 @@ clears the relevant cache before returning so the next read is fresh.
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -56,11 +57,27 @@ NOTIFICATION_STATUS_LABELS_AR: dict[str, str] = {
 }
 
 
+def _clean_ascii_secret(value: object) -> str:
+    """Strip whitespace and any non-ASCII characters from a secret.
+
+    `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` go straight into the
+    Authorization/apikey HTTP headers on every request, and HTTP header
+    values must be pure ASCII. A stray non-breaking space, curly quote, or
+    right-to-left mark picked up when copying the value into Streamlit
+    Cloud's secrets editor is invisible but crashes every single Supabase
+    call with `'ascii' codec can't encode characters...`. Both values are
+    URLs/JWTs, which are ASCII-only by construction, so it's always safe to
+    drop anything outside that range here rather than fail on every page.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value)).strip()
+    return "".join(ch for ch in normalized if ord(ch) < 128)
+
+
 @st.cache_resource
 def get_supabase() -> Client:
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        raw_url = st.secrets["SUPABASE_URL"]
+        raw_key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
     except (KeyError, FileNotFoundError) as exc:
         st.error(
             "لم يتم العثور على بيانات الاتصال. أنشئ الملف "
@@ -68,6 +85,26 @@ def get_supabase() -> Client:
             "`SUPABASE_SERVICE_ROLE_KEY`."
         )
         raise SystemExit from exc
+
+    url = _clean_ascii_secret(raw_url)
+    key = _clean_ascii_secret(raw_key)
+
+    if not url or not key:
+        st.error(
+            "قيمة SUPABASE_URL أو SUPABASE_SERVICE_ROLE_KEY فارغة أو غير "
+            "صالحة بعد التنظيف. أعد نسخها من لوحة Supabase مباشرة إلى "
+            "secrets.toml دون أي تنسيق إضافي."
+        )
+        raise SystemExit
+
+    if url != str(raw_url).strip() or key != str(raw_key).strip():
+        st.warning(
+            "تم العثور على أحرف غير صالحة (غير ASCII) في بيانات اتصال "
+            "Supabase وتمت إزالتها تلقائياً. يُنصح بإعادة نسخ القيم من لوحة "
+            "Supabase للتأكد من سلامتها.",
+            icon=":material/warning:",
+        )
+
     return create_client(url, key)
 
 
