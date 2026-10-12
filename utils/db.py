@@ -69,19 +69,6 @@ def get_supabase() -> Client:
         )
         raise SystemExit from exc
 
-    if not url.isascii() or not key.isascii():
-        # Deleting the offending characters (a previous version of this
-        # function did) silently corrupts the JWT's structure and swaps a
-        # cryptic ascii-codec crash for an equally cryptic 401 Invalid API
-        # key. Surface it instead and point at the fix: re-copy the value.
-        st.error(
-            "تحتوي قيمة SUPABASE_URL أو SUPABASE_SERVICE_ROLE_KEY على حرف "
-            "غير ASCII. أعد نسخ القيمة مباشرة من لوحة Supabase إلى "
-            "secrets.toml — من المرجح أن محرر النصوص استبدل حرفاً "
-            "(كشرطة أو علامة اقتباس) بحرف مشابه غير قياسي."
-        )
-        raise SystemExit
-
     return create_client(url, key)
 
 
