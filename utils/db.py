@@ -69,6 +69,44 @@ def get_supabase() -> Client:
         )
         raise SystemExit from exc
 
+    # Startup diagnostics for "Name or service not known" (DNS failure):
+    # printed to the server-side app log (Streamlit Cloud > Manage app >
+    # Logs), never to the page. Only the URL is printed in full — a
+    # service_role key is a credential and never belongs in logs — the key
+    # is checked the same way but only its length is logged.
+    print(f"[get_supabase] SUPABASE_URL repr after strip(): {url!r}", flush=True)
+    print(f"[get_supabase] SUPABASE_URL length: {len(url)}", flush=True)
+    print(f"[get_supabase] SUPABASE_SERVICE_ROLE_KEY length after strip(): {len(key)}", flush=True)
+
+    # .strip() only trims the two ends; it can't catch whitespace or a
+    # newline pasted into the *middle* of the value (e.g. a secrets-editor
+    # textarea that line-wrapped a long URL/key into two literal lines).
+    # That splits the hostname and surfaces as exactly this DNS error, so
+    # flag it loudly instead of silently rewriting the secret.
+    if any(ch.isspace() for ch in url):
+        print(f"[get_supabase] SUPABASE_URL contains embedded whitespace: {url!r}", flush=True)
+        st.error(
+            "تحتوي قيمة SUPABASE_URL على مسافة أو سطر جديد في منتصفها، ما "
+            "يكسر اسم الخادم المطلوب (راجع سجلات التطبيق على Streamlit "
+            "Cloud لرؤية القيمة الكاملة). افتح Settings → Secrets على "
+            "Streamlit Cloud وتأكد أن قيمة SUPABASE_URL سطر واحد متواصل "
+            "بلا فواصل أسطر، ثم أعد تشغيل التطبيق (Reboot) لتحميل القيمة "
+            "الجديدة."
+        )
+        raise SystemExit
+
+    if any(ch.isspace() for ch in key):
+        print(
+            "[get_supabase] SUPABASE_SERVICE_ROLE_KEY contains embedded whitespace",
+            flush=True,
+        )
+        st.error(
+            "تحتوي قيمة SUPABASE_SERVICE_ROLE_KEY على مسافة أو سطر جديد في "
+            "منتصفها. افتح Settings → Secrets على Streamlit Cloud وتأكد "
+            "أنها سطر واحد متواصل، ثم أعد تشغيل التطبيق (Reboot)."
+        )
+        raise SystemExit
+
     return create_client(url, key)
 
 
