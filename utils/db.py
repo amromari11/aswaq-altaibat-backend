@@ -120,9 +120,37 @@ def get_supabase() -> Client:
     return create_client(url, key)
 
 
+def _exact_count(table: str, filters: dict | None = None) -> int:
+    """Row count via PostgREST's ``count="exact"``, independent of any
+    per-request row limit.
+
+    Supabase/PostgREST caps a plain ``.select()`` at ~1000 rows per request
+    by default (a server-side ``db-max-rows`` setting) — harmless for small
+    tables, but once a table passes that size every ``len(fetch_x())``-based
+    count on this dashboard silently reported 1000 instead of the real
+    total (this is exactly what happened to the "المنتجات" card once the
+    catalog passed 11,000 rows). ``count="exact"`` runs a server-side
+    ``SELECT count(*)`` instead, so it's correct regardless of table size —
+    and cheaper, since ``.limit(1)`` means only one row of data actually
+    transfers.
+    """
+    sb = get_supabase()
+    query = sb.table(table).select("id", count="exact").limit(1)
+    if filters:
+        for column, value in filters.items():
+            query = query.eq(column, value)
+    res = query.execute()
+    return res.count or 0
+
+
 # ---------------------------------------------------------------------------
 # Categories
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl="30s")
+def count_categories() -> int:
+    return _exact_count("categories")
+
+
 @st.cache_data(ttl="30s")
 def fetch_categories() -> list[dict]:
     sb = get_supabase()
@@ -144,6 +172,7 @@ def insert_category(name: str, name_ar: str) -> None:
     sb = get_supabase()
     sb.table("categories").insert({"name": name, "name_ar": name_ar, "is_active": True}).execute()
     fetch_categories.clear()
+    count_categories.clear()
 
 
 def update_category(category_id: str, fields: dict) -> None:
@@ -156,11 +185,22 @@ def delete_category(category_id: str) -> None:
     sb = get_supabase()
     sb.table("categories").delete().eq("id", category_id).execute()
     fetch_categories.clear()
+    count_categories.clear()
 
 
 # ---------------------------------------------------------------------------
 # Products
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl="30s")
+def count_products(*, is_weekly_offer: bool | None = None, is_app_exclusive: bool | None = None) -> int:
+    filters: dict[str, bool] = {}
+    if is_weekly_offer is not None:
+        filters["is_weekly_offer"] = is_weekly_offer
+    if is_app_exclusive is not None:
+        filters["is_app_exclusive"] = is_app_exclusive
+    return _exact_count("products", filters or None)
+
+
 @st.cache_data(ttl="30s")
 def fetch_products() -> list[dict]:
     sb = get_supabase()
@@ -185,18 +225,24 @@ def insert_product(payload: dict) -> None:
     sb = get_supabase()
     sb.table("products").insert(payload).execute()
     fetch_products.clear()
+    count_products.clear()
 
 
 def update_product(product_id: str, fields: dict) -> None:
     sb = get_supabase()
     sb.table("products").update(fields).eq("id", product_id).execute()
     fetch_products.clear()
+    # Cheap and correct either way: a plain price/name edit doesn't change
+    # any count, but a weekly-offer/exclusive flag toggle does, and this
+    # function doesn't know which `fields` changed.
+    count_products.clear()
 
 
 def delete_product(product_id: str) -> None:
     sb = get_supabase()
     sb.table("products").delete().eq("id", product_id).execute()
     fetch_products.clear()
+    count_products.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +267,16 @@ def fetch_profiles() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Orders
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl="20s")
+def count_orders(*, statuses: tuple[str, ...] | None = None) -> int:
+    sb = get_supabase()
+    query = sb.table("orders").select("id", count="exact").limit(1)
+    if statuses:
+        query = query.in_("status", list(statuses))
+    res = query.execute()
+    return res.count or 0
+
+
 @st.cache_data(ttl="20s")
 def fetch_orders() -> list[dict]:
     sb = get_supabase()
@@ -261,6 +317,7 @@ def update_order_status(order_id: str, status: str) -> None:
     sb = get_supabase()
     sb.table("orders").update({"status": status}).eq("id", order_id).execute()
     fetch_orders.clear()
+    count_orders.clear()
 
 
 # ---------------------------------------------------------------------------
