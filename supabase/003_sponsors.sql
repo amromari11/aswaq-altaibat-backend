@@ -3,11 +3,24 @@
 -- Builds on schema.sql; run after it. Lets supplier brands (Pepsi, Almarai,
 -- Dettol, ...) buy placement, toggled from the admin dashboard, read by the
 -- Flutter app's sponsors feature.
+--
+-- Safe to re-run: one transaction, and every object is created only if
+-- missing (an earlier partial attempt reported "policy already exists").
 -- ============================================================================
 
-create type public.banner_placement as enum ('home', 'in_cart');
+begin;
 
-create table public.sponsors_banners (
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'banner_placement' and typnamespace = 'public'::regnamespace) then
+    create type public.banner_placement as enum ('home', 'in_cart');
+  end if;
+  if not exists (select 1 from pg_type where typname = 'promoted_product_slot' and typnamespace = 'public'::regnamespace) then
+    create type public.promoted_product_slot as enum ('top_of_search', 'category_top', 'cart_cross_sell');
+  end if;
+end $$;
+
+create table if not exists public.sponsors_banners (
   id               uuid primary key default gen_random_uuid(),
   image_url        text not null,
   title            text,
@@ -22,12 +35,11 @@ create table public.sponsors_banners (
   created_at       timestamptz not null default now()
 );
 
-create index idx_sponsors_banners_placement on public.sponsors_banners (placement) where is_active = true;
+create index if not exists idx_sponsors_banners_placement on public.sponsors_banners (placement) where is_active = true;
 
 -- Product placements: "top of search" or "sponsored in category" slots.
-create type public.promoted_product_slot as enum ('top_of_search', 'category_top', 'cart_cross_sell');
 
-create table public.promoted_products (
+create table if not exists public.promoted_products (
   id             uuid primary key default gen_random_uuid(),
   product_id     uuid not null references public.products (id) on delete cascade,
   sponsor_name   text not null,
@@ -40,8 +52,8 @@ create table public.promoted_products (
   created_at     timestamptz not null default now()
 );
 
-create index idx_promoted_products_slot on public.promoted_products (slot) where is_active = true;
-create index idx_promoted_products_category on public.promoted_products (category_id);
+create index if not exists idx_promoted_products_slot on public.promoted_products (slot) where is_active = true;
+create index if not exists idx_promoted_products_category on public.promoted_products (category_id);
 
 alter table public.sponsors_banners enable row level security;
 alter table public.promoted_products enable row level security;
@@ -49,10 +61,17 @@ alter table public.promoted_products enable row level security;
 -- Public catalog data: the mobile app reads active placements with its
 -- anon key, same as categories/products. Writes stay service_role-only
 -- (admin dashboard), same pattern as the rest of the catalog.
+drop policy if exists "Active sponsor banners are publicly readable" on public.sponsors_banners;
 create policy "Active sponsor banners are publicly readable"
   on public.sponsors_banners for select
   using (is_active = true);
 
+drop policy if exists "Active promoted products are publicly readable" on public.promoted_products;
 create policy "Active promoted products are publicly readable"
   on public.promoted_products for select
   using (is_active = true);
+
+-- Make PostgREST see the new tables immediately.
+notify pgrst, 'reload schema';
+
+commit;
