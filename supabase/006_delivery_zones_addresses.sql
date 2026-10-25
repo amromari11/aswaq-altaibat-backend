@@ -1,4 +1,9 @@
 -- ============================================================================
+-- SUPERSEDED — DO NOT RUN AGAINST THE LIVE PROJECT.
+-- The live project has a different version of these tables (uuid zone ids,
+-- min_order_amount, address_line); 007_align_live_zones_addresses.sql builds
+-- on that instead. Kept for history / fresh-project reference only.
+-- ============================================================================
 -- Aswaq Altaibat — delivery zones & saved customer addresses
 -- Builds on schema.sql; run after it. Intended to run after 004 as well
 -- (money columns here are numeric(10,3) to match), but doesn't depend on it.
