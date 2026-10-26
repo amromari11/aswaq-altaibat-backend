@@ -7,7 +7,7 @@ Setup (once; pgserver ships Postgres inside a pip package and needs Python 3.9-3
     python3.9 -m venv /tmp/pgenv && /tmp/pgenv/bin/pip install pgserver
 
 Usage (from anywhere):
-    run_local.py reset                       # rebuild the baseline database
+    run_local.py reset [008 009 ...]         # rebuild the baseline, then apply those migrations (by number prefix)
     run_local.py run  supabase/008_*.sql     # apply a migration (fails loudly on any ERROR)
     run_local.py test supabase/tests/008_guest_checkout.test.sql   # one rolled-back transaction
     run_local.py q "select 1"                # ad-hoc query
@@ -62,6 +62,10 @@ if cmd == 'reset':
     run(open(B+'004_jod_precision.sql').read(),'004')
     run(LIVE,'live stubs')
     run(open(B+'007_align_live_zones_addresses.sql').read(),'007')
+    import glob
+    for number in sys.argv[2:]:
+        (path,) = glob.glob(B + number + '_*.sql')
+        run(open(path).read(), os.path.basename(path))
     print('reset ok')
 elif cmd == 'test':
     # one explicit transaction so SET LOCAL ROLE / set_config take effect; rolled back after
