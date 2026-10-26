@@ -286,7 +286,7 @@ def fetch_orders() -> list[dict]:
             .select(
                 "id, status, subtotal, delivery_fee, discount_amount, total_price, "
                 "delivery_address, payment_method, notes, created_at, user_id, "
-                "customer_id, customer_name, customer_phone, zone_id, "
+                "customer_id, customer_name, customer_phone, zone_id, delivery_lat, delivery_lng, "
                 "delivery_zones(name_ar), profiles(full_name, phone_number)"
             )
             .order("created_at", desc=True)
@@ -432,6 +432,66 @@ def fetch_customer_orders(customer_id: str) -> list[dict]:
         st.error(f"تعذر تحميل طلبات العميل: {exc}")
         return []
     return res.data or []
+
+
+# ---------------------------------------------------------------------------
+# Driver location (backend supabase/010_driver_tracking.sql)
+#
+# Moving the driver writes order_driver_locations and the database broadcasts
+# the new position to the customer's tracking map over Realtime. Only valid
+# while the order is "out for delivery".
+# ---------------------------------------------------------------------------
+_DRIVER_MIGRATION_HINT = (
+    "يبدو أن ملف الترحيل `supabase/010_driver_tracking.sql` "
+    "لم يُطبَّق بعد على Supabase — شغّله من SQL Editor ثم أعد تحميل الصفحة."
+)
+
+_DRIVER_ERRORS_AR = {
+    "not_out_for_delivery": "لا يمكن تحديد موقع السائق إلا عندما تكون حالة الطلب «خرج للتوصيل».",
+    "invalid_location": "إحداثيات غير صحيحة — خط العرض بين -90 و90، وخط الطول بين -180 و180.",
+    "order_not_found": "لم يُعثر على الطلب.",
+}
+
+
+def driver_error_message(exc: Exception) -> str:
+    """Arabic explanation for a failed driver-location call."""
+    text = str(exc)
+    for code, message in _DRIVER_ERRORS_AR.items():
+        if code in text:
+            return message
+    if _is_missing_object(exc):
+        return _DRIVER_MIGRATION_HINT
+    return f"تعذر تحديث موقع السائق: {exc}"
+
+
+def set_driver_location(order_id: str, latitude: float, longitude: float) -> None:
+    """Move the driver. Raises on failure (use :func:`driver_error_message`)."""
+    sb = get_supabase()
+    sb.rpc(
+        "set_driver_location",
+        {"p_order_id": order_id, "p_latitude": latitude, "p_longitude": longitude},
+    ).execute()
+    fetch_driver_location.clear()
+
+
+@st.cache_data(ttl="5s")
+def fetch_driver_location(order_id: str) -> dict | None:
+    """The driver's last position for an order (latitude, longitude, updated_at),
+    or None if none has been sent (or 010 isn't applied yet)."""
+    sb = get_supabase()
+    try:
+        res = (
+            sb.table("order_driver_locations")
+            .select("latitude, longitude, updated_at")
+            .eq("order_id", order_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        st.error(_DRIVER_MIGRATION_HINT if _is_missing_object(exc) else f"تعذر تحميل موقع السائق: {exc}")
+        return None
+    rows = res.data or []
+    return rows[0] if rows else None
 
 
 # ---------------------------------------------------------------------------

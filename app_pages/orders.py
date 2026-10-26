@@ -10,6 +10,7 @@ from utils.db import (
     fetch_orders,
     update_order_status,
 )
+from utils.driver_panel import render_driver_panel
 from utils.insights import local_phone, order_customer, to_amman
 
 st.caption("متابعة الطلبات وتحديث حالتها")
@@ -101,6 +102,9 @@ else:
                     st.dataframe(item_df, hide_index=True, width="stretch", alt="عناصر الطلب")
                 else:
                     st.caption("لا توجد عناصر مسجلة لهذا الطلب.")
+
+                if order["status"] == "out_for_delivery":
+                    render_driver_panel(order)
 
                 st.divider()
                 with st.container(horizontal=True):
