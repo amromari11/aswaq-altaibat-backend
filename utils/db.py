@@ -286,7 +286,8 @@ def fetch_orders() -> list[dict]:
             .select(
                 "id, status, subtotal, delivery_fee, discount_amount, total_price, "
                 "delivery_address, payment_method, notes, created_at, user_id, "
-                "profiles(full_name, phone_number)"
+                "customer_id, customer_name, customer_phone, zone_id, "
+                "delivery_zones(name_ar), profiles(full_name, phone_number)"
             )
             .order("created_at", desc=True)
             .execute()
@@ -318,6 +319,119 @@ def update_order_status(order_id: str, status: str) -> None:
     sb.table("orders").update({"status": status}).eq("id", order_id).execute()
     fetch_orders.clear()
     count_orders.clear()
+
+
+# ---------------------------------------------------------------------------
+# Customers & analytics (backend supabase/008_guest_checkout_customers.sql)
+#
+# Aggregated in SQL, never by summing fetched rows: PostgREST caps any
+# response at ~1000 rows, so a client-side sum would silently undercount once
+# order volume grows (the same trap the product counts above fell into).
+# "Sales" exclude cancelled orders. Timestamps go in as ISO strings so these
+# functions stay cacheable.
+# ---------------------------------------------------------------------------
+_MIGRATION_HINT = (
+    "يبدو أن ملف الترحيل `supabase/008_guest_checkout_customers.sql` "
+    "لم يُطبَّق بعد على Supabase — شغّله من SQL Editor ثم أعد تحميل الصفحة."
+)
+
+
+def _is_missing_object(exc: Exception) -> bool:
+    text = str(exc)
+    return any(
+        marker in text
+        for marker in ("PGRST202", "PGRST205", "Could not find the function", "Could not find the table", "does not exist")
+    )
+
+
+def _rpc_rows(function: str, params: dict) -> list[dict]:
+    sb = get_supabase()
+    try:
+        res = sb.rpc(function, params).execute()
+    except Exception as exc:
+        st.error(_MIGRATION_HINT if _is_missing_object(exc) else f"تعذر تحميل التحليلات: {exc}")
+        return []
+    return res.data or []
+
+
+@st.cache_data(ttl="30s")
+def fetch_order_insights(start_iso: str, end_iso: str) -> dict:
+    """orders_count, total_sales, avg_order_value, cancelled_count,
+    unique_customers for ``[start, end)``; ``{}`` if unavailable."""
+    rows = _rpc_rows("admin_order_insights", {"p_from": start_iso, "p_to": end_iso})
+    return rows[0] if rows else {}
+
+
+@st.cache_data(ttl="30s")
+def fetch_top_products(start_iso: str, end_iso: str, limit: int = 20) -> list[dict]:
+    """Best-selling products by units sold: product_id, name_ar, name, sku,
+    units_sold, revenue, orders_count."""
+    return _rpc_rows("admin_top_products", {"p_from": start_iso, "p_to": end_iso, "p_limit": limit})
+
+
+@st.cache_data(ttl="30s")
+def fetch_top_zones(start_iso: str, end_iso: str, limit: int = 10) -> list[dict]:
+    """Delivery zones by order count: zone_id, zone_name_ar, orders_count,
+    sales. Orders with no zone appear with a null name."""
+    return _rpc_rows("admin_top_zones", {"p_from": start_iso, "p_to": end_iso, "p_limit": limit})
+
+
+@st.cache_data(ttl="30s")
+def fetch_sales_by_day(start_iso: str, end_iso: str) -> list[dict]:
+    """One row per Amman calendar day with orders: day, orders_count, sales."""
+    return _rpc_rows("admin_sales_by_day", {"p_from": start_iso, "p_to": end_iso})
+
+
+@st.cache_data(ttl="30s")
+def fetch_customer_stats() -> list[dict]:
+    """Every customer with orders_count, total_spend (cancelled excluded),
+    first/last order time. Paged, because there can be more than the
+    ~1000-row response cap."""
+    sb = get_supabase()
+    rows: list[dict] = []
+    page_size = 1000
+    start = 0
+    try:
+        while True:
+            res = (
+                sb.table("admin_customer_stats")
+                .select("*")
+                .order("total_spend", desc=True)
+                .order("customer_id")
+                .range(start, start + page_size - 1)
+                .execute()
+            )
+            batch = res.data or []
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            start += page_size
+    except Exception as exc:
+        st.error(_MIGRATION_HINT if _is_missing_object(exc) else f"تعذر تحميل العملاء: {exc}")
+        return []
+    return rows
+
+
+@st.cache_data(ttl="20s")
+def fetch_customer_orders(customer_id: str) -> list[dict]:
+    """One customer's order history, newest first."""
+    sb = get_supabase()
+    try:
+        res = (
+            sb.table("orders")
+            .select(
+                "id, status, subtotal, delivery_fee, total_price, delivery_address, "
+                "payment_method, notes, created_at, customer_name, customer_phone, "
+                "delivery_zones(name_ar)"
+            )
+            .eq("customer_id", customer_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        st.error(f"تعذر تحميل طلبات العميل: {exc}")
+        return []
+    return res.data or []
 
 
 # ---------------------------------------------------------------------------

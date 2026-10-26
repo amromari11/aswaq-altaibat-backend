@@ -28,6 +28,8 @@ page = st.navigation(
     [
         st.Page("app_pages/overview.py", title="نظرة عامة", icon=":material/dashboard:"),
         st.Page("app_pages/orders.py", title="الطلبات", icon=":material/receipt_long:"),
+        st.Page("app_pages/customers.py", title="العملاء", icon=":material/group:"),
+        st.Page("app_pages/analytics.py", title="التحليلات", icon=":material/insights:"),
         st.Page("app_pages/products.py", title="المنتجات", icon=":material/inventory_2:"),
         st.Page("app_pages/offers.py", title="العروض", icon=":material/local_offer:"),
         st.Page("app_pages/inventory.py", title="المخزون", icon=":material/warehouse:"),

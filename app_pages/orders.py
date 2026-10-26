@@ -10,6 +10,7 @@ from utils.db import (
     fetch_orders,
     update_order_status,
 )
+from utils.insights import local_phone, order_customer, to_amman
 
 st.caption("متابعة الطلبات وتحديث حالتها")
 
@@ -35,8 +36,9 @@ else:
         df = pd.DataFrame(
             [
                 {
-                    "العميل": (o.get("profiles") or {}).get("full_name") or "—",
-                    "الهاتف": (o.get("profiles") or {}).get("phone_number") or "—",
+                    "العميل": order_customer(o)[0],
+                    "الهاتف": local_phone(order_customer(o)[1]),
+                    "المنطقة": (o.get("delivery_zones") or {}).get("name_ar") or "—",
                     "الحالة": ORDER_STATUS_LABELS_AR.get(o["status"], o["status"]),
                     "الإجمالي": float(o.get("total_price") or 0),
                     "العنوان": o.get("delivery_address") or "—",
@@ -46,9 +48,11 @@ else:
             ]
         )
 
+        df["التاريخ"] = to_amman(df["التاريخ"])
         event = st.dataframe(
             df,
             hide_index=True,
+            column_config={"التاريخ": st.column_config.DatetimeColumn("التاريخ", format="YYYY-MM-DD HH:mm")},
             on_select="rerun",
             selection_mode="single-row",
             alt="قائمة الطلبات",
@@ -60,14 +64,15 @@ else:
             st.caption("اختر طلباً من الجدول أعلاه لعرض التفاصيل وتحديث الحالة.")
         else:
             order = filtered[selected_rows[0]]
-            customer = order.get("profiles") or {}
+            customer_name, customer_phone = order_customer(order)
 
             with st.container(border=True):
                 st.subheader("تفاصيل الطلب")
                 st.table(
                     {
-                        "العميل": customer.get("full_name") or "—",
-                        "الهاتف": customer.get("phone_number") or "—",
+                        "العميل": customer_name,
+                        "الهاتف": local_phone(customer_phone),
+                        "المنطقة": (order.get("delivery_zones") or {}).get("name_ar") or "—",
                         "عنوان التوصيل": order.get("delivery_address") or "—",
                         "طريقة الدفع": order.get("payment_method") or "—",
                         "ملاحظات": order.get("notes") or "—",
