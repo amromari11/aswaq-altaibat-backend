@@ -12,6 +12,8 @@ What this does, in order:
    metadata row the export tool appends).
 2. Resolves each row's فئة value to a categories.id — reusing an existing
    category if one already has that exact name, creating it otherwise.
+   Names listed in category_aliases (migration 012) resolve to their primary
+   category first, so the 39 POS groups stay folded into the 13 primary ones.
    Rows with a blank فئة go into a "غير مصنف" (Uncategorized) fallback
    category created for this purpose.
 3. Upserts every product by sku (on_conflict=sku), so re-running this
@@ -127,6 +129,12 @@ def resolve_categories(url: str, headers: dict, category_names: set[str]) -> dic
         f"{url}/rest/v1/categories?select=id,name", headers=headers, timeout=30
     ).json()
     name_to_id = {row["name"]: row["id"] for row in existing}
+
+    # Migration 012 folds the POS item groups into primary categories; an alias wins over an
+    # old category of the same name, so a re-import files products under the primary one.
+    aliases = requests.get(f"{url}/rest/v1/category_aliases?select=alias_name_ar,category_id", headers=headers, timeout=30)
+    if aliases.status_code == 200:
+        name_to_id.update({row["alias_name_ar"]: row["category_id"] for row in aliases.json()})
 
     missing = sorted(category_names - set(name_to_id))
     for i in range(0, len(missing), BATCH_SIZE):
