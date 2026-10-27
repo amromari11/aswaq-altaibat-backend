@@ -161,3 +161,37 @@ def test_banner_shares_the_upload_rules():
     for raw in (b"", b"junk"):
         with pytest.raises(ImageRejected):
             prepare_banner_image(raw)
+
+
+# --- product pictures: contained on white, never cropped ----------------------
+
+from utils.images import prepare_product_image  # noqa: E402
+
+
+def test_product_picture_keeps_the_whole_product_on_white():
+    wide = Image.new("RGB", (1000, 400), (255, 255, 255))
+    wide.paste((255, 0, 0), (0, 150, 100, 250))      # red mark at the far left edge
+    wide.paste((0, 0, 255), (900, 150, 1000, 250))   # blue mark at the far right edge
+    out = prepare_product_image(encode(wide))
+    img = decode(out.data).convert("RGB")
+    assert img.size == (600, 600) and (out.size, out.height) == (600, None)
+    mid = img.height // 2
+    assert img.getpixel((10, mid))[0] > 200 and img.getpixel((10, mid))[2] < 120       # red survived at the edge
+    assert img.getpixel((img.width - 10, mid))[2] > 200 and img.getpixel((img.width - 10, mid))[0] < 120
+    assert min(img.getpixel((300, 5))) > 240 and min(img.getpixel((300, img.height - 5))) > 240  # white bars top and bottom
+
+
+def test_product_picture_is_not_upscaled():
+    out = prepare_product_image(encode(Image.new("RGB", (300, 220), "red")))
+    assert decode(out.data).size == (300, 300)
+
+
+def test_product_picture_transparency_becomes_white():
+    img = decode(prepare_product_image(encode(Image.new("RGBA", (400, 400), (0, 0, 0, 0)))).data).convert("RGB")
+    assert min(img.getpixel((200, 200))) > 240
+
+
+def test_product_picture_shares_the_upload_rules():
+    for raw in (b"", b"junk", encode(Image.new("RGB", (150, 150)))):
+        with pytest.raises(ImageRejected):
+            prepare_product_image(raw)

@@ -198,35 +198,47 @@ CATEGORY_IMAGE_BUCKET = "category-images"
 
 
 def _remove_category_object(path: str | None) -> None:
-    """Best-effort delete of an old Storage object. Never raises: by the time this runs the category
-    already points at its new image, so a failed cleanup only leaves an orphan file behind."""
+    _remove_object(CATEGORY_IMAGE_BUCKET, path)
+
+
+def _replace_image(
+    table: str, bucket_name: str, folder: str, row_id: str, data: bytes, content_type: str, old_path: str | None
+) -> str:
+    """Store ``data`` in ``bucket_name`` and point the row at it; returns the public URL.
+
+    Order matters: upload the new file, point the row at it, and only then delete the old file, so any
+    failure leaves the row with its previous, still-working image. If pointing the row at the new file
+    fails, the just-uploaded file is removed again instead of being left orphaned.
+    """
+    sb = get_supabase()
+    bucket = sb.storage.from_(bucket_name)
+    # A fresh name per upload: the file is cached for a year, so replacing in place would show stale pictures.
+    path = f"{folder}/{row_id}/{uuid.uuid4().hex}.webp"
+    bucket.upload(path, data, {"content-type": content_type, "cache-control": "31536000", "x-upsert": "false"})
+    url = bucket.get_public_url(path).rstrip("?")
+    try:
+        sb.table(table).update({"image_url": url, "image_path": path}).eq("id", row_id).execute()
+    except Exception:
+        _remove_object(bucket_name, path)
+        raise
+    _remove_object(bucket_name, old_path)
+    return url
+
+
+def _remove_object(bucket_name: str, path: str | None) -> None:
+    """Best-effort delete of a Storage object. Never raises: by the time this runs the row already points
+    at its new image, so a failed cleanup only leaves an orphan file behind."""
     if not path:
         return
     try:
-        get_supabase().storage.from_(CATEGORY_IMAGE_BUCKET).remove([path])
+        get_supabase().storage.from_(bucket_name).remove([path])
     except Exception:
         pass
 
 
 def upload_category_image(category_id: str, data: bytes, content_type: str, old_path: str | None = None) -> str:
-    """Store ``data`` (already processed by ``utils.images``) as the category's image; returns its public URL.
-
-    Order matters: upload the new file, point the row at it, and only then delete the old file, so any
-    failure leaves the category with its previous, still-working image. If pointing the row at the new
-    file fails, the just-uploaded file is removed again instead of being left orphaned.
-    """
-    sb = get_supabase()
-    bucket = sb.storage.from_(CATEGORY_IMAGE_BUCKET)
-    # A fresh name per upload: the file is cached for a year, so replacing in place would show stale pictures.
-    path = f"categories/{category_id}/{uuid.uuid4().hex}.webp"
-    bucket.upload(path, data, {"content-type": content_type, "cache-control": "31536000", "x-upsert": "false"})
-    url = bucket.get_public_url(path).rstrip("?")
-    try:
-        sb.table("categories").update({"image_url": url, "image_path": path}).eq("id", category_id).execute()
-    except Exception:
-        _remove_category_object(path)
-        raise
-    _remove_category_object(old_path)
+    """Store ``data`` (already processed by ``utils.images``) as the category's image; returns its public URL."""
+    url = _replace_image("categories", CATEGORY_IMAGE_BUCKET, "categories", category_id, data, content_type, old_path)
     fetch_categories.clear()
     return url
 
@@ -406,6 +418,93 @@ def delete_product(product_id: str) -> None:
     sb.table("products").delete().eq("id", product_id).execute()
     fetch_products.clear()
     count_products.clear()
+
+
+# ---------------------------------------------------------------------------
+# Product images. The catalog has 11,000+ products and the API returns at most ~1000 rows per request,
+# so these look products up on the server (by name / SKU / id) instead of loading the whole table.
+# ---------------------------------------------------------------------------
+
+PRODUCT_IMAGE_BUCKET = "product-images"
+PRODUCT_IMAGE_FIELDS = "id, name, name_ar, sku, category_id, image_url, image_path, is_active"
+_LOOKUP_CHUNK = 100  # ids/skus per request: keeps the URL short
+
+
+def _clean_filter_term(term: str) -> str:
+    """Strip characters that mean something inside a PostgREST ``or=(...)`` / ``ilike`` filter."""
+    for ch in ",%()*\\":
+        term = term.replace(ch, " ")
+    return " ".join(term.split())
+
+
+def find_products(term: str, limit: int = 30) -> list[dict]:
+    """Products whose name or SKU contains ``term`` (at least 2 characters), newest first."""
+    term = _clean_filter_term(term or "")
+    if len(term) < 2:
+        return []
+    res = (
+        get_supabase()
+        .table("products")
+        .select(PRODUCT_IMAGE_FIELDS)
+        .or_(f"name.ilike.%{term}%,name_ar.ilike.%{term}%,sku.ilike.%{term}%")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
+
+
+def fetch_products_by_skus(skus: list[str]) -> list[dict]:
+    rows: list[dict] = []
+    sb = get_supabase()
+    for i in range(0, len(skus), _LOOKUP_CHUNK):
+        chunk = skus[i : i + _LOOKUP_CHUNK]
+        rows += sb.table("products").select(PRODUCT_IMAGE_FIELDS).in_("sku", chunk).execute().data or []
+    return rows
+
+
+def fetch_products_by_ids(ids: list[str]) -> list[dict]:
+    rows: list[dict] = []
+    sb = get_supabase()
+    for i in range(0, len(ids), _LOOKUP_CHUNK):
+        chunk = ids[i : i + _LOOKUP_CHUNK]
+        rows += sb.table("products").select(PRODUCT_IMAGE_FIELDS).in_("id", chunk).execute().data or []
+    return rows
+
+
+@st.cache_data(ttl="30s")
+def count_products_with_image() -> int:
+    """Products that have a picture (uploaded or linked), via an exact server-side count."""
+    res = get_supabase().table("products").select("id", count="exact").not_.is_("image_url", "null").limit(1).execute()
+    return res.count or 0
+
+
+def upload_product_image(product_id: str, data: bytes, content_type: str, old_path: str | None = None) -> str:
+    """Store ``data`` (processed by ``utils.images.prepare_product_image``) as the product's picture."""
+    url = _replace_image("products", PRODUCT_IMAGE_BUCKET, "products", product_id, data, content_type, old_path)
+    _clear_product_caches()
+    return url
+
+
+def set_product_image_link(product_id: str, url: str, old_path: str | None = None) -> None:
+    """Use an external picture link; an earlier uploaded file (``old_path``) is deleted afterwards."""
+    if not is_valid_image_link(url):
+        raise ValueError("invalid_image_link")
+    get_supabase().table("products").update({"image_url": url.strip(), "image_path": None}).eq("id", product_id).execute()
+    _remove_object(PRODUCT_IMAGE_BUCKET, old_path)
+    _clear_product_caches()
+
+
+def remove_product_image(product_id: str, old_path: str | None = None) -> None:
+    """Clear the product's picture (the app then shows its category's picture instead)."""
+    get_supabase().table("products").update({"image_url": None, "image_path": None}).eq("id", product_id).execute()
+    _remove_object(PRODUCT_IMAGE_BUCKET, old_path)
+    _clear_product_caches()
+
+
+def _clear_product_caches() -> None:
+    fetch_products.clear()
+    count_products_with_image.clear()
 
 
 # ---------------------------------------------------------------------------

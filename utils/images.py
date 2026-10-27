@@ -1,4 +1,4 @@
-"""Turn an uploaded picture into a category image (square, 600 px) or banner (wide, 1200 px), as WebP.
+"""Turn an uploaded picture into a category image (square, 600 px), banner (wide, 1200 px) or product picture (white square, 600 px), as WebP.
 
 Pure (Pillow only; no Streamlit, no network) so it can be unit-tested. Everything
 that arrives from the dashboard's file picker is untrusted input, so this refuses
@@ -116,3 +116,16 @@ def prepare_banner_image(raw: bytes, *, size: tuple[int, int] = BANNER_SIZE, qua
     height = round(width / aspect)
     image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
     return PreparedImage(data=_encode(image, quality), content_type=CONTENT_TYPE, size=width, height=height)
+
+
+def prepare_product_image(raw: bytes, *, size: int = OUTPUT_SIZE, quality: int = 85) -> PreparedImage:
+    """Validate ``raw`` and return a square WebP with the whole product visible on white.
+
+    Unlike category images this never crops: a bottle or a box shot is shrunk to fit and centred on
+    white, so nothing is cut off and the card's white background blends in. Never upscaled past the
+    source; the canvas is the larger side of the picture, at most ``size``.
+    """
+    image = _load(raw, min_side=MIN_SIDE)
+    side = min(size, max(image.size))
+    image = ImageOps.pad(image, (side, side), method=Image.Resampling.LANCZOS, color=(255, 255, 255), centering=(0.5, 0.5))
+    return PreparedImage(data=_encode(image, quality), content_type=CONTENT_TYPE, size=side)
