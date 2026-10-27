@@ -30,6 +30,20 @@ end $$;
 create schema if not exists auth;
 create table if not exists auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb, is_anonymous boolean default false);
 create or replace function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+-- Supabase Storage stand-in (the real schema only exists on Supabase): just the two tables the
+-- migrations touch, with row-level security on and no policies, like a fresh project.
+create schema if not exists storage;
+create table if not exists storage.buckets (
+  id text primary key, name text not null, owner uuid, created_at timestamptz default now(),
+  updated_at timestamptz default now(), public boolean default false, avif_autodetection boolean default false,
+  file_size_limit bigint, allowed_mime_types text[], owner_id text);
+create table if not exists storage.objects (
+  id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets (id), name text,
+  owner uuid, created_at timestamptz default now(), updated_at timestamptz default now(), metadata jsonb);
+alter table storage.objects enable row level security;
+alter table storage.buckets enable row level security;
+grant usage on schema storage to anon, authenticated, service_role;
+grant all on all tables in schema storage to anon, authenticated, service_role;
 grant usage on schema public, auth to anon, authenticated, service_role;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
@@ -56,7 +70,7 @@ def run(sql, label=''):
     return out
 cmd = sys.argv[1]
 if cmd == 'reset':
-    run("drop schema if exists tst cascade; drop schema if exists public cascade; drop schema if exists auth cascade; create schema public; grant all on schema public to public;")
+    run("drop schema if exists tst cascade; drop schema if exists public cascade; drop schema if exists auth cascade; drop schema if exists storage cascade; create schema public; grant all on schema public to public;")
     run(STUBS,'stubs')
     run(open(B+'schema.sql').read(),'schema')
     run(open(B+'004_jod_precision.sql').read(),'004')
@@ -68,8 +82,18 @@ if cmd == 'reset':
         run(open(path).read(), os.path.basename(path))
     print('reset ok')
 elif cmd == 'test':
-    # one explicit transaction so SET LOCAL ROLE / set_config take effect; rolled back after
-    print(run('begin;\n' + open(sys.argv[2]).read() + '\nrollback;', sys.argv[2]))
+    # A test may contain lines `-- @include 011_category_images.sql` (path relative to supabase/): the migration is
+    # pasted in at that point, minus its own begin;/commit; lines, so it runs inside the test's rolled-back transaction.
+    def _expand(text):
+        out = []
+        for line in text.splitlines():
+            if line.startswith('-- @include '):
+                body = open(B + line[len('-- @include '):].strip()).read()
+                out += [l for l in body.splitlines() if l.strip().lower() not in ('begin;', 'commit;')]
+            else:
+                out.append(line)
+        return "\n".join(out)
+    print(run('begin;\n' + _expand(open(sys.argv[2]).read()) + '\nrollback;', sys.argv[2]))
 elif cmd == 'run':
     print(run(open(sys.argv[2]).read(), sys.argv[2]))
 elif cmd == 'q':

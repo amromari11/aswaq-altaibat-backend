@@ -3,9 +3,10 @@
 import pandas as pd
 import streamlit as st
 
+from utils.category_image_panel import render_category_image_panel
 from utils.db import delete_category, fetch_categories, insert_category, update_category
 
-st.caption("إضافة أقسام الكتالوج (ألبان، وجبات خفيفة، لحوم…) وتعديلها")
+st.caption("إضافة أقسام الكتالوج وتعديلها ورفع صورة لكل قسم (تظهر في بطاقات الأقسام بالتطبيق)")
 
 with st.form("new_category", clear_on_submit=True, border=True):
     st.subheader("إضافة قسم جديد")
@@ -37,7 +38,9 @@ else:
     df = pd.DataFrame(
         [
             {
+                "الصورة": c.get("image_url"),
                 "الاسم": c.get("name_ar") or c.get("name") or "",
+                "الترتيب": int(c.get("display_order") or 0),
                 "مفعّل": bool(c.get("is_active")),
             }
             for c in categories
@@ -47,6 +50,7 @@ else:
     event = st.dataframe(
         df,
         hide_index=True,
+        column_config={"الصورة": st.column_config.ImageColumn("الصورة", width="small")},
         on_select="rerun",
         selection_mode="single-row",
         alt="قائمة الأقسام",
@@ -65,9 +69,22 @@ else:
             edit_name_en = edit_col2.text_input(
                 "الاسم بالإنجليزية", value=category.get("name") or "", key=f"cat_en_{category['id']}"
             )
-            is_active = st.checkbox(
+            order_col, active_col = st.columns(2)
+            display_order = order_col.number_input(
+                "ترتيب العرض",
+                min_value=0,
+                step=1,
+                value=int(category.get("display_order") or 0),
+                help="الأصغر يظهر أولاً في التطبيق. عند التساوي يُرتَّب بالاسم.",
+                key=f"cat_order_{category['id']}",
+            )
+            is_active = active_col.checkbox(
                 "مفعّل", value=bool(category.get("is_active")), key=f"cat_active_{category['id']}"
             )
+
+            st.divider()
+            render_category_image_panel(category)
+            st.divider()
 
             with st.container(horizontal=True, horizontal_alignment="right"):
                 if st.button(
@@ -80,6 +97,7 @@ else:
                                 "name_ar": edit_name_ar.strip(),
                                 "name": edit_name_en.strip() or edit_name_ar.strip(),
                                 "is_active": is_active,
+                                "display_order": int(display_order),
                             },
                         )
                         st.toast("تم حفظ التعديلات.", icon=":material/check_circle:")

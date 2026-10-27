@@ -11,7 +11,9 @@ clears the relevant cache before returning so the next read is fresh.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import streamlit as st
 from supabase import Client, create_client
@@ -157,7 +159,7 @@ def fetch_categories() -> list[dict]:
     try:
         res = (
             sb.table("categories")
-            .select("id, name, name_ar, display_order, is_active, created_at")
+            .select("id, name, name_ar, image_url, image_path, display_order, is_active, created_at")
             .order("display_order")
             .order("created_at")
             .execute()
@@ -186,6 +188,71 @@ def delete_category(category_id: str) -> None:
     sb.table("categories").delete().eq("id", category_id).execute()
     fetch_categories.clear()
     count_categories.clear()
+
+
+# ---- Category images (backend supabase/011_category_images.sql) ------------------------------------
+# Uploaded images live in the public Storage bucket below; the row keeps their public URL (image_url,
+# what the app shows) and the object path (image_path, so a replaced/removed image can be deleted).
+# A category whose image_url is a placeholder or an external link has image_path = None.
+CATEGORY_IMAGE_BUCKET = "category-images"
+
+
+def _remove_category_object(path: str | None) -> None:
+    """Best-effort delete of an old Storage object. Never raises: by the time this runs the category
+    already points at its new image, so a failed cleanup only leaves an orphan file behind."""
+    if not path:
+        return
+    try:
+        get_supabase().storage.from_(CATEGORY_IMAGE_BUCKET).remove([path])
+    except Exception:
+        pass
+
+
+def upload_category_image(category_id: str, data: bytes, content_type: str, old_path: str | None = None) -> str:
+    """Store ``data`` (already processed by ``utils.images``) as the category's image; returns its public URL.
+
+    Order matters: upload the new file, point the row at it, and only then delete the old file, so any
+    failure leaves the category with its previous, still-working image. If pointing the row at the new
+    file fails, the just-uploaded file is removed again instead of being left orphaned.
+    """
+    sb = get_supabase()
+    bucket = sb.storage.from_(CATEGORY_IMAGE_BUCKET)
+    # A fresh name per upload: the file is cached for a year, so replacing in place would show stale pictures.
+    path = f"categories/{category_id}/{uuid.uuid4().hex}.webp"
+    bucket.upload(path, data, {"content-type": content_type, "cache-control": "31536000", "x-upsert": "false"})
+    url = bucket.get_public_url(path).rstrip("?")
+    try:
+        sb.table("categories").update({"image_url": url, "image_path": path}).eq("id", category_id).execute()
+    except Exception:
+        _remove_category_object(path)
+        raise
+    _remove_category_object(old_path)
+    fetch_categories.clear()
+    return url
+
+
+def is_valid_image_link(url: str) -> bool:
+    """A link we're willing to store as a category image: https, with a host, and not absurdly long."""
+    parsed = urlparse((url or "").strip())
+    return parsed.scheme == "https" and bool(parsed.netloc) and len(url.strip()) <= 2000
+
+
+def set_category_image_link(category_id: str, url: str, old_path: str | None = None) -> None:
+    """Use an external image link; an earlier uploaded file (``old_path``) is deleted afterwards."""
+    if not is_valid_image_link(url):
+        raise ValueError("invalid_image_link")
+    sb = get_supabase()
+    sb.table("categories").update({"image_url": url.strip(), "image_path": None}).eq("id", category_id).execute()
+    _remove_category_object(old_path)
+    fetch_categories.clear()
+
+
+def remove_category_image(category_id: str, old_path: str | None = None) -> None:
+    """Clear the category's image (the app then shows its icon); an uploaded file is deleted afterwards."""
+    sb = get_supabase()
+    sb.table("categories").update({"image_url": None, "image_path": None}).eq("id", category_id).execute()
+    _remove_category_object(old_path)
+    fetch_categories.clear()
 
 
 # ---------------------------------------------------------------------------
