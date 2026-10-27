@@ -125,3 +125,39 @@ def test_metadata_is_not_carried_into_the_output():
     exif[0x010F] = "SecretCamera"
     out = decode(prepare_category_image(encode(src, "JPEG", exif=exif)).data)
     assert b"SecretCamera" not in out.info.get("exif", b"")
+
+
+# --- banners ------------------------------------------------------------------
+
+from utils.images import prepare_banner_image  # noqa: E402
+
+
+def test_banner_is_cropped_to_1200_by_520_webp():
+    out = prepare_banner_image(encode(Image.new("RGB", (3000, 2000), (10, 120, 200)), "JPEG"))
+    img = decode(out.data)
+    assert img.format == "WEBP" and img.size == (1200, 520) and (out.size, out.height) == (1200, 520)
+
+
+def test_banner_never_upscales_but_keeps_the_aspect():
+    out = prepare_banner_image(encode(Image.new("RGB", (900, 900), "red")))
+    assert decode(out.data).size == (900, round(900 / (1200 / 520)))
+
+
+def test_banner_crops_from_the_centre():
+    src = Image.new("RGB", (1200, 1200), (255, 0, 0))
+    src.paste((0, 0, 255), (0, 400, 1200, 800))  # blue band in the middle third
+    img = decode(prepare_banner_image(encode(src)).data).convert("RGB")
+    assert img.getpixel((600, img.height // 2))[2] > 200
+    assert img.getpixel((600, 5))[2] < 80 or img.getpixel((600, 5))[2] > 200  # edges come from the same band: no red stretch
+
+
+def test_banner_too_narrow_is_refused():
+    with pytest.raises(ImageRejected) as e:
+        prepare_banner_image(encode(Image.new("RGB", (500, 900))))
+    assert "صغيرة" in e.value.message
+
+
+def test_banner_shares_the_upload_rules():
+    for raw in (b"", b"junk"):
+        with pytest.raises(ImageRejected):
+            prepare_banner_image(raw)

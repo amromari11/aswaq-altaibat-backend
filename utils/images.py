@@ -1,4 +1,4 @@
-"""Turn an uploaded picture into a category image: square, 600 px, WebP.
+"""Turn an uploaded picture into a category image (square, 600 px) or banner (wide, 1200 px), as WebP.
 
 Pure (Pillow only; no Streamlit, no network) so it can be unit-tested. Everything
 that arrives from the dashboard's file picker is untrusted input, so this refuses
@@ -18,6 +18,8 @@ MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # what we accept from the browser
 MAX_PIXELS = 40_000_000  # ~ a 6300 x 6300 photo; bigger is a decompression-bomb risk
 MIN_SIDE = 200  # below this a category card would look blurry
 OUTPUT_SIZE = 600  # px, square: sharp on a 3x phone at card size, ~50 KB
+BANNER_SIZE = (1200, 520)  # px, ~2.3:1: the Home carousel's shape, sharp on a 3x phone
+BANNER_MIN_WIDTH = 600
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 CONTENT_TYPE = "image/webp"
 
@@ -34,16 +36,12 @@ class ImageRejected(Exception):
 class PreparedImage:
     data: bytes
     content_type: str
-    size: int  # side length in px (the image is square)
+    size: int  # width in px (for a category image this is also the height: it is square)
+    height: int | None = None  # set for non-square (banner) images
 
 
-def prepare_category_image(raw: bytes, *, size: int = OUTPUT_SIZE, quality: int = 85) -> PreparedImage:
-    """Validate ``raw`` and return a square WebP of at most ``size`` px.
-
-    Centre-crops to a square (never stretches), applies the camera's EXIF
-    rotation, flattens transparency onto white, and never upscales past the
-    source: a 300 px picture comes out 300 px, not a blurry 600.
-    """
+def _load(raw: bytes, *, min_side: int) -> Image.Image:
+    """Validate ``raw`` and return it upright and flattened to RGB; raises ImageRejected."""
     if not raw:
         raise ImageRejected("الملف فارغ.")
     if len(raw) > MAX_UPLOAD_BYTES:
@@ -69,8 +67,8 @@ def prepare_category_image(raw: bytes, *, size: int = OUTPUT_SIZE, quality: int 
     except (OSError, SyntaxError, ValueError):
         raise ImageRejected("تعذر قراءة الصورة — الملف تالف.") from None
 
-    if min(image.size) < MIN_SIDE:
-        raise ImageRejected(f"الصورة صغيرة جداً — الحد الأدنى {MIN_SIDE}×{MIN_SIDE} بكسل.")
+    if min(image.size) < min_side:
+        raise ImageRejected(f"الصورة صغيرة جداً — الحد الأدنى {min_side} بكسل لأقصر ضلع.")
 
     # Transparency becomes white, not black: a PNG logo on a clear background
     # would otherwise turn into a black square after the WebP/RGB conversion.
@@ -78,13 +76,43 @@ def prepare_category_image(raw: bytes, *, size: int = OUTPUT_SIZE, quality: int 
         rgba = image.convert("RGBA")
         flat = Image.new("RGB", rgba.size, (255, 255, 255))
         flat.paste(rgba, mask=rgba.getchannel("A"))
-        image = flat
-    else:
-        image = image.convert("RGB")
+        return flat
+    return image.convert("RGB")
 
-    side = min(size, min(image.size))
-    image = ImageOps.fit(image, (side, side), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
+def _encode(image: Image.Image, quality: int) -> bytes:
     out = BytesIO()
     image.save(out, format="WEBP", quality=quality, method=4)
-    return PreparedImage(data=out.getvalue(), content_type=CONTENT_TYPE, size=side)
+    return out.getvalue()
+
+
+def prepare_category_image(raw: bytes, *, size: int = OUTPUT_SIZE, quality: int = 85) -> PreparedImage:
+    """Validate ``raw`` and return a square WebP of at most ``size`` px.
+
+    Centre-crops to a square (never stretches), applies the camera's EXIF
+    rotation, flattens transparency onto white, and never upscales past the
+    source: a 300 px picture comes out 300 px, not a blurry 600.
+    """
+    image = _load(raw, min_side=MIN_SIDE)
+    side = min(size, min(image.size))
+    image = ImageOps.fit(image, (side, side), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    return PreparedImage(data=_encode(image, quality), content_type=CONTENT_TYPE, size=side)
+
+
+def prepare_banner_image(raw: bytes, *, size: tuple[int, int] = BANNER_SIZE, quality: int = 85) -> PreparedImage:
+    """Validate ``raw`` and return a wide WebP (aspect of ``size``, at most that big).
+
+    Same rules as ``prepare_category_image`` but centre-cropped to the carousel's
+    aspect ratio; never upscaled.
+    """
+    out_w, out_h = size
+    aspect = out_w / out_h
+    image = _load(raw, min_side=1)
+    w, h = image.size
+    crop_w = min(w, h * aspect)  # widest region with the banner's aspect that fits in the source
+    if crop_w < BANNER_MIN_WIDTH:
+        raise ImageRejected(f"الصورة صغيرة جداً — اختر صورة عرضية بعرض {BANNER_MIN_WIDTH} بكسل على الأقل.")
+    width = min(out_w, int(crop_w))
+    height = round(width / aspect)
+    image = ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    return PreparedImage(data=_encode(image, quality), content_type=CONTENT_TYPE, size=width, height=height)

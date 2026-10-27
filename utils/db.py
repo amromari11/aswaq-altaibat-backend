@@ -256,6 +256,102 @@ def remove_category_image(category_id: str, old_path: str | None = None) -> None
 
 
 # ---------------------------------------------------------------------------
+# Banners (Home carousel). Images uploaded here live in the public `banner-images` bucket.
+# ---------------------------------------------------------------------------
+
+BANNER_IMAGE_BUCKET = "banner-images"
+BANNER_FIELDS = "id, title, image_url, image_path, target_type, target_id, is_active, display_order, created_at"
+
+
+@st.cache_data(ttl="30s")
+def fetch_banners() -> list[dict]:
+    sb = get_supabase()
+    try:
+        res = sb.table("banners").select(BANNER_FIELDS).order("display_order").order("created_at").execute()
+    except Exception as exc:
+        st.error(f"تعذر تحميل البانرات: {exc}")
+        return []
+    return res.data or []
+
+
+def search_products(term: str, limit: int = 25) -> list[dict]:
+    """Active products whose name contains ``term`` (for picking a banner's target product)."""
+    term = (term or "").strip().replace(",", " ").replace("%", " ").replace("(", " ").replace(")", " ")
+    if len(term) < 2:
+        return []
+    sb = get_supabase()
+    res = (
+        sb.table("products")
+        .select("id, name, name_ar")
+        .eq("is_active", True)
+        .or_(f"name.ilike.%{term}%,name_ar.ilike.%{term}%")
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
+
+
+def _remove_banner_object(path: str | None) -> None:
+    """Best-effort delete of a banner file that is no longer referenced; never raises."""
+    if not path:
+        return
+    try:
+        get_supabase().storage.from_(BANNER_IMAGE_BUCKET).remove([path])
+    except Exception:
+        pass
+
+
+def save_banner(banner_id: str | None, fields: dict, image: bytes | None = None, old_path: str | None = None) -> None:
+    """Create (``banner_id`` None) or update a banner; ``image`` is a processed WebP from ``utils.images``.
+
+    Same order as category images: upload the new file, save the row, and only then delete the file it
+    replaces - so a failure never leaves the banner pointing at a missing image, and a row that fails
+    to save doesn't leave an orphan upload behind.
+    """
+    sb = get_supabase()
+    fields = dict(fields)
+    new_path = None
+    if image is not None:
+        bucket = sb.storage.from_(BANNER_IMAGE_BUCKET)
+        new_path = f"banners/{uuid.uuid4().hex}.webp"
+        bucket.upload(
+            new_path, image, {"content-type": "image/webp", "cache-control": "31536000", "x-upsert": "false"}
+        )
+        fields["image_url"] = bucket.get_public_url(new_path).rstrip("?")
+        fields["image_path"] = new_path
+    try:
+        if banner_id is None:
+            sb.table("banners").insert(fields).execute()
+        else:
+            sb.table("banners").update(fields).eq("id", banner_id).execute()
+    except Exception:
+        _remove_banner_object(new_path)
+        raise
+    if new_path:
+        _remove_banner_object(old_path)
+    fetch_banners.clear()
+
+
+def set_banner_active(banner_id: str, is_active: bool) -> None:
+    get_supabase().table("banners").update({"is_active": is_active}).eq("id", banner_id).execute()
+    fetch_banners.clear()
+
+
+def set_banner_orders(orders: list[tuple[str, int]]) -> None:
+    """Write new ``display_order`` values, one ``(banner_id, order)`` pair per changed banner."""
+    sb = get_supabase()
+    for banner_id, order in orders:
+        sb.table("banners").update({"display_order": order}).eq("id", banner_id).execute()
+    fetch_banners.clear()
+
+
+def delete_banner(banner_id: str, image_path: str | None = None) -> None:
+    get_supabase().table("banners").delete().eq("id", banner_id).execute()
+    _remove_banner_object(image_path)
+    fetch_banners.clear()
+
+
+# ---------------------------------------------------------------------------
 # Products
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl="30s")
