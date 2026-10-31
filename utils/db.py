@@ -539,21 +539,30 @@ def count_orders(*, statuses: tuple[str, ...] | None = None) -> int:
     return res.count or 0
 
 
+_ORDER_FIELDS = (
+    "id, status, subtotal, delivery_fee, discount_amount, total_price, "
+    "delivery_address, payment_method, notes, created_at, user_id, "
+    "customer_id, customer_name, customer_phone, zone_id, delivery_lat, delivery_lng, "
+    "delivery_zones(name_ar), profiles(full_name, phone_number)"
+)
+
+
 @st.cache_data(ttl="20s")
 def fetch_orders() -> list[dict]:
     sb = get_supabase()
     try:
-        res = (
-            sb.table("orders")
-            .select(
-                "id, status, subtotal, delivery_fee, discount_amount, total_price, "
-                "delivery_address, payment_method, notes, created_at, user_id, "
-                "customer_id, customer_name, customer_phone, zone_id, delivery_lat, delivery_lng, "
-                "delivery_zones(name_ar), profiles(full_name, phone_number)"
-            )
-            .order("created_at", desc=True)
-            .execute()
-        )
+        res = None
+        # Newest columns first; each older tier is what a database without the newer migration has:
+        # 016 added driver_name / driver_phone, 015 added order_type / scheduled_time.
+        for extra in (", order_type, scheduled_time, driver_name, driver_phone", ", order_type, scheduled_time", ""):
+            try:
+                res = sb.table("orders").select(_ORDER_FIELDS + extra).order("created_at", desc=True).execute()
+                break
+            except Exception as exc:
+                if not _is_missing_object(exc):
+                    raise
+        if res is None:
+            raise RuntimeError("orders could not be read")
     except Exception as exc:
         st.error(f"تعذر تحميل الطلبات: {exc}")
         return []
@@ -712,6 +721,7 @@ _DRIVER_ERRORS_AR = {
     "not_out_for_delivery": "لا يمكن تحديد موقع السائق إلا عندما تكون حالة الطلب «خرج للتوصيل».",
     "invalid_location": "إحداثيات غير صحيحة — خط العرض بين -90 و90، وخط الطول بين -180 و180.",
     "order_not_found": "لم يُعثر على الطلب.",
+    "pickup_order": "هذا طلب استلام من الفرع — لا يوجد سائق.",
 }
 
 
@@ -724,6 +734,20 @@ def driver_error_message(exc: Exception) -> str:
     if _is_missing_object(exc):
         return _DRIVER_MIGRATION_HINT
     return f"تعذر تحديث موقع السائق: {exc}"
+
+
+DRIVER_DETAILS_MIGRATION_HINT = "بيانات السائق غير مدعومة بعد — شغّل الملف supabase/016_best_sellers_driver_info.sql في Supabase أولاً."
+
+
+def set_driver_details(order_id: str, name: str | None, phone: str | None) -> None:
+    """Save the driver's name and phone for an order (blank clears). The phone is stored as +9627XXXXXXXX
+    and shown to the customer as call / WhatsApp buttons only while the order is out for delivery."""
+    from utils.fulfillment import to_e164
+
+    get_supabase().table("orders").update(
+        {"driver_name": (name or "").strip() or None, "driver_phone": to_e164(phone) if (phone or "").strip() else None}
+    ).eq("id", order_id).execute()
+    fetch_orders.clear()
 
 
 def set_driver_location(order_id: str, latitude: float, longitude: float) -> None:
@@ -808,3 +832,27 @@ def update_notification_result(
         }
     ).eq("id", notification_id).execute()
     fetch_notifications.clear()
+
+
+# ---------------------------------------------------------------------------
+# Store settings (migration 015): the pickup branch and the delivery/pickup time-slot rules.
+# ---------------------------------------------------------------------------
+
+STORE_SETTINGS_MIGRATION_HINT = "إعدادات المتجر غير موجودة بعد — شغّل الملف supabase/015_order_type_schedule.sql في Supabase أولاً."
+
+
+@st.cache_data(ttl="30s")
+def fetch_store_settings() -> dict | None:
+    """The single settings row, or None when migration 015 hasn't been applied."""
+    try:
+        res = get_supabase().table("store_settings").select("*").limit(1).execute()
+    except Exception as exc:
+        if _is_missing_object(exc):
+            return None
+        raise
+    return (res.data or [None])[0]
+
+
+def update_store_settings(fields: dict) -> None:
+    get_supabase().table("store_settings").update({**fields, "updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", True).execute()
+    fetch_store_settings.clear()

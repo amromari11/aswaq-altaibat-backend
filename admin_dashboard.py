@@ -36,6 +36,7 @@ page = st.navigation(
         st.Page("app_pages/inventory.py", title="المخزون", icon=":material/warehouse:"),
         st.Page("app_pages/categories.py", title="الأقسام", icon=":material/category:"),
         st.Page("app_pages/banners.py", title="البانرات", icon=":material/view_carousel:"),
+        st.Page("app_pages/store_settings.py", title="إعدادات المتجر", icon=":material/storefront:"),
         st.Page("app_pages/notifications.py", title="الإشعارات", icon=":material/notifications:"),
     ],
     position="sidebar",

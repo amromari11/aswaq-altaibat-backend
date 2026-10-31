@@ -12,7 +12,8 @@ import pandas as pd
 import streamlit as st
 
 import utils.db as db
-from utils.insights import AMMAN, to_amman
+from utils.fulfillment import driver_details_problem
+from utils.insights import AMMAN, local_phone, to_amman
 from utils.store import STORE_LAT, STORE_LNG, distance_m, step_toward
 
 
@@ -33,8 +34,41 @@ def _send(order_id: str, latitude: float, longitude: float) -> None:
     st.rerun()
 
 
+def _render_driver_details(order: dict) -> None:
+    """Who is delivering: shown to the customer as the driver card on their tracking screen."""
+    order_id = order["id"]
+    with st.container(border=True):
+        st.subheader("بيانات السائق")
+        st.caption("يراها العميل في بطاقة السائق مع زري الاتصال والمراسلة عبر واتساب، فقط أثناء «خرج للتوصيل». اتركها فارغة لإظهار رقم المتجر.")
+        c1, c2 = st.columns(2)
+        name = c1.text_input("اسم السائق", value=order.get("driver_name") or "", key=f"drv_name_{order_id}")
+        phone = c2.text_input(
+            "هاتف السائق",
+            value=local_phone(order.get("driver_phone")) if order.get("driver_phone") else "",
+            placeholder="079XXXXXXX",
+            key=f"drv_phone_{order_id}",
+        )
+        if st.button("حفظ بيانات السائق", icon=":material/badge:", key=f"drv_details_save_{order_id}"):
+            problem = driver_details_problem(name, phone)
+            if problem:
+                st.error(problem)
+                return
+            try:
+                db.set_driver_details(order_id, name, phone)
+            except Exception as exc:
+                text = str(exc)
+                if "driver_name" in text or "driver_phone" in text:
+                    st.error(db.DRIVER_DETAILS_MIGRATION_HINT)
+                else:
+                    st.error(f"تعذر حفظ بيانات السائق: {exc}")
+                return
+            st.toast("تم حفظ بيانات السائق.", icon=":material/check_circle:")
+            st.rerun()
+
+
 def render_driver_panel(order: dict) -> None:
     order_id = order["id"]
+    _render_driver_details(order)
     pin = _pin(order)
     current = db.fetch_driver_location(order_id)
     here = (float(current["latitude"]), float(current["longitude"])) if current else None

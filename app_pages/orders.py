@@ -11,6 +11,7 @@ from utils.db import (
     update_order_status,
 )
 from utils.driver_panel import render_driver_panel
+from utils.fulfillment import ORDER_TYPE_LABELS_AR, order_type, order_type_label, schedule_label, status_label
 from utils.insights import local_phone, order_customer, to_amman
 
 st.caption("متابعة الطلبات وتحديث حالتها")
@@ -29,7 +30,15 @@ else:
         default=status_labels["all"],
     )
     selected_status = label_to_status.get(selected_label, "all")
-    filtered = orders if selected_status == "all" else [o for o in orders if o["status"] == selected_status]
+    type_labels = {"all": "الكل", **ORDER_TYPE_LABELS_AR}
+    selected_type_label = st.segmented_control("طريقة الاستلام", options=list(type_labels.values()), default=type_labels["all"])
+    selected_type = {v: k for k, v in type_labels.items()}.get(selected_type_label, "all")
+    filtered = [
+        o
+        for o in orders
+        if (selected_status == "all" or o["status"] == selected_status)
+        and (selected_type == "all" or order_type(o) == selected_type)
+    ]
 
     if not filtered:
         st.info("لا توجد طلبات بهذه الحالة.")
@@ -39,8 +48,10 @@ else:
                 {
                     "العميل": order_customer(o)[0],
                     "الهاتف": local_phone(order_customer(o)[1]),
+                    "النوع": order_type_label(o),
+                    "الموعد": schedule_label(o),
                     "المنطقة": (o.get("delivery_zones") or {}).get("name_ar") or "—",
-                    "الحالة": ORDER_STATUS_LABELS_AR.get(o["status"], o["status"]),
+                    "الحالة": status_label(o["status"], order_type(o)),
                     "الإجمالي": float(o.get("total_price") or 0),
                     "العنوان": o.get("delivery_address") or "—",
                     "التاريخ": o.get("created_at"),
@@ -69,12 +80,21 @@ else:
 
             with st.container(border=True):
                 st.subheader("تفاصيل الطلب")
+                kind = order_type(order)
                 st.table(
                     {
                         "العميل": customer_name,
                         "الهاتف": local_phone(customer_phone),
-                        "المنطقة": (order.get("delivery_zones") or {}).get("name_ar") or "—",
-                        "عنوان التوصيل": order.get("delivery_address") or "—",
+                        "النوع": order_type_label(order),
+                        "الموعد": schedule_label(order),
+                        **(
+                            {}
+                            if kind == "pickup"
+                            else {
+                                "المنطقة": (order.get("delivery_zones") or {}).get("name_ar") or "—",
+                                "عنوان التوصيل": order.get("delivery_address") or "—",
+                            }
+                        ),
                         "طريقة الدفع": order.get("payment_method") or "—",
                         "ملاحظات": order.get("notes") or "—",
                     },
@@ -103,7 +123,7 @@ else:
                 else:
                     st.caption("لا توجد عناصر مسجلة لهذا الطلب.")
 
-                if order["status"] == "out_for_delivery":
+                if order["status"] == "out_for_delivery" and kind == "delivery":
                     render_driver_panel(order)
 
                 st.divider()
@@ -112,7 +132,7 @@ else:
                         "تحديث الحالة",
                         options=ORDER_STATUSES,
                         index=ORDER_STATUSES.index(order["status"]),
-                        format_func=lambda s: ORDER_STATUS_LABELS_AR[s],
+                        format_func=lambda s: status_label(s, kind),
                         key=f"status_select_{order['id']}",
                     )
                     if st.button(
