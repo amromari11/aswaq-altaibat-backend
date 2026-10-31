@@ -7,19 +7,25 @@ from utils.db import (
     NOTIFICATION_AUDIENCE_LABELS_AR,
     NOTIFICATION_AUDIENCES,
     NOTIFICATION_STATUS_LABELS_AR,
+    count_push_tokens,
     fetch_notifications,
     fetch_profiles,
 )
-from utils.notifications import send_push_notification
+from utils.notifications import fcm_status, send_push_notification
 
 st.caption("إرسال إشعارات للعملاء وتتبع سجل الإرسال")
 
-st.info(
-    "لا يوجد مزوّد إشعارات مُفعّل بعد — تطبيق الهاتف لم يُصدر بعد وجدول "
-    "push_tokens فارغ، لذلك سيتم تسجيل الإشعارات هنا دون تسليم فعلي حتى "
-    "يتم ربط Firebase أو OneSignal أو Expo.",
-    icon=":material/info:",
-)
+_client, _problem = fcm_status()
+_devices = count_push_tokens()
+if _client is None:
+    st.warning(
+        f"الإرسال الفعلي غير مفعّل: {_problem}\n\nسيُسجَّل الإشعار في السجل دون تسليم حتى تضيف "
+        "`FCM_SERVICE_ACCOUNT` (ملف حساب الخدمة من Firebase) إلى إعدادات التطبيق.",
+        icon=":material/notifications_off:",
+    )
+else:
+    st.success(f"Firebase متصل — مشروع {_client.project_id}.", icon=":material/notifications_active:")
+st.metric("الأجهزة المسجلة لاستقبال الإشعارات", _devices)
 
 profiles = fetch_profiles()
 customer_options = {
@@ -43,6 +49,10 @@ with st.form("compose_notification", border=True):
             st.warning("لا يوجد عملاء مسجلون بعد.")
     submitted = st.form_submit_button("إرسال", type="primary", icon=":material/send:")
 
+flash = st.session_state.pop("notification_flash", None)
+if flash:
+    getattr(st, flash[0])(flash[1])
+
 if submitted:
     clean_title = (title or "").strip()
     clean_body = (body or "").strip()
@@ -55,9 +65,12 @@ if submitted:
         try:
             result = send_push_notification(clean_title, clean_body, audience, target_user_id)
             if result["delivered"]:
-                st.success(f"تم الإرسال إلى {result['recipient_count']} جهاز.")
+                msg = f"تم الإرسال إلى {result['recipient_count']} جهاز."
+                if result["failed_count"]:
+                    msg += f" تعذّر الوصول إلى {result['failed_count']} جهاز."
+                st.session_state["notification_flash"] = ("success", msg)
             else:
-                st.warning("تم تسجيل الإشعار، لكن لا يوجد أي جهاز مسجل لاستقباله حالياً.")
+                st.session_state["notification_flash"] = ("warning", f"لم يُرسل الإشعار: {result['error']}")
             st.rerun()
         except Exception as exc:
             st.error(f"تعذر إرسال الإشعار: {exc}")
@@ -74,7 +87,9 @@ else:
                 "العنوان": n.get("title"),
                 "الجهة": NOTIFICATION_AUDIENCE_LABELS_AR.get(n.get("audience"), n.get("audience")),
                 "الحالة": NOTIFICATION_STATUS_LABELS_AR.get(n.get("status"), n.get("status")),
-                "عدد المستلمين": n.get("recipient_count"),
+                "وصل إلى": n.get("recipient_count"),
+                "تعذّر": n.get("failed_count") or 0,
+                "ملاحظات": n.get("error_message") or "",
                 "التاريخ": n.get("created_at"),
             }
             for n in notifications

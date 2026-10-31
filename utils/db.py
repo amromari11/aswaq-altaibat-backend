@@ -800,6 +800,29 @@ def fetch_notifications() -> list[dict]:
     return res.data or []
 
 
+_PUSH_TOKEN_PAGE = 1000
+
+
+def fetch_push_tokens(audience: str, user_id: str | None = None) -> list[str]:
+    """Device tokens for an audience: everyone, the weekly-offers opt-ins, or one customer's devices."""
+    sb = get_supabase()
+    tokens: list[str] = []
+    start = 0
+    while True:
+        query = sb.table("push_tokens").select("token").order("created_at").order("id")
+        if audience == "single_user":
+            if not user_id:
+                return []
+            query = query.eq("user_id", user_id)
+        elif audience == "weekly_offer_subscribers":
+            query = query.eq("weekly_offers", True)
+        rows = query.range(start, start + _PUSH_TOKEN_PAGE - 1).execute().data or []
+        tokens.extend(r["token"] for r in rows)
+        if len(rows) < _PUSH_TOKEN_PAGE:
+            return tokens
+        start += _PUSH_TOKEN_PAGE
+
+
 def count_push_tokens(user_id: str | None = None) -> int:
     sb = get_supabase()
     query = sb.table("push_tokens").select("id", count="exact")
@@ -807,6 +830,13 @@ def count_push_tokens(user_id: str | None = None) -> int:
         query = query.eq("user_id", user_id)
     res = query.execute()
     return res.count or 0
+
+
+def delete_push_tokens(tokens: list[str]) -> None:
+    """Remove devices FCM says no longer exist (in chunks, to keep the request URL short)."""
+    sb = get_supabase()
+    for i in range(0, len(tokens), 100):
+        sb.table("push_tokens").delete().in_("token", tokens[i : i + 100]).execute()
 
 
 def insert_notification(payload: dict) -> dict:
@@ -821,12 +851,14 @@ def update_notification_result(
     status: str,
     recipient_count: int,
     error_message: str | None = None,
+    failed_count: int = 0,
 ) -> None:
     sb = get_supabase()
     sb.table("notifications").update(
         {
             "status": status,
             "recipient_count": recipient_count,
+            "failed_count": failed_count,
             "error_message": error_message,
             "sent_at": datetime.now(timezone.utc).isoformat(),
         }
