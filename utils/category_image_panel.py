@@ -1,7 +1,7 @@
 """Admin panel for a category's picture: upload, use a link, or remove.
 
 Shown inside the category editor on the Categories page. An upload is validated and
-re-encoded by ``utils.images`` (square, 600 px, WebP), previewed *before* saving, and
+re-encoded by ``utils.images`` (whole picture on white, square, 600 px, WebP), previewed *before* saving, and
 stored in the public ``category-images`` bucket; the customer app picks it up on its
 next load. Categories ship with placeholder photos (migration 011) that this replaces.
 """
@@ -44,7 +44,7 @@ def render_category_image_panel(category: dict) -> None:
             f"رفع صورة جديدة (PNG أو JPG أو WebP، حتى {MAX_UPLOAD_BYTES // (1024 * 1024)} ميغابايت)",
             type=["png", "jpg", "jpeg", "webp"],
             key=f"cat_img_upload_{category_id}_{version}",
-            help=f"تُقصّ الصورة تلقائياً إلى مربع وتُحوَّل إلى WebP بحجم 600×600. الحد الأدنى {MIN_SIDE}×{MIN_SIDE} بكسل.",
+            help=f"الأفضل صورة منتج معزولة (PNG بخلفية شفافة أو بيضاء): تظهر كاملة دون قص على خلفية بيضاء بحجم أقصاه 600×600. الحد الأدنى {MIN_SIDE}×{MIN_SIDE} بكسل.",
         )
 
         if uploaded is not None:

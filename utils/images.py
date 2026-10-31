@@ -87,16 +87,13 @@ def _encode(image: Image.Image, quality: int) -> bytes:
 
 
 def prepare_category_image(raw: bytes, *, size: int = OUTPUT_SIZE, quality: int = 85) -> PreparedImage:
-    """Validate ``raw`` and return a square WebP of at most ``size`` px.
+    """Validate ``raw`` and return a square WebP of at most ``size`` px, the whole picture on white.
 
-    Centre-crops to a square (never stretches), applies the camera's EXIF
-    rotation, flattens transparency onto white, and never upscales past the
-    source: a 300 px picture comes out 300 px, not a blurry 600.
+    Category tiles show an isolated product cutout, so the picture is shrunk to fit and centred
+    on white, never cropped or stretched. Applies the camera's EXIF rotation, flattens
+    transparency (a cutout PNG) onto white, and never upscales past the source.
     """
-    image = _load(raw, min_side=MIN_SIDE)
-    side = min(size, min(image.size))
-    image = ImageOps.fit(image, (side, side), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-    return PreparedImage(data=_encode(image, quality), content_type=CONTENT_TYPE, size=side)
+    return prepare_product_image(raw, size=size, quality=quality)
 
 
 def prepare_banner_image(raw: bytes, *, size: tuple[int, int] = BANNER_SIZE, quality: int = 85) -> PreparedImage:

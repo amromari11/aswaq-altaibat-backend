@@ -34,13 +34,23 @@ def test_never_upscales_a_small_source():
     assert img.size == (300, 300)
 
 
-def test_crops_from_the_centre_instead_of_stretching():
+def test_wide_picture_is_contained_on_white_never_cropped():
     wide = Image.new("RGB", (900, 300), (255, 0, 0))
     wide.paste((0, 0, 255), (300, 0, 600, 300))  # blue middle third
     img = decode(prepare_category_image(encode(wide)).data).convert("RGB")
-    assert img.size == (300, 300)
-    r, g, b = img.getpixel((150, 150))
-    assert b > 200 and r < 60  # the middle survived; the red sides were cropped away
+    assert img.size == (600, 600)
+    r, g, b = img.getpixel((10, 300))  # the red left edge survived
+    assert r > 200 and g < 60 and b < 60
+    assert min(img.getpixel((300, 10))) > 240  # white bands above and below
+    assert min(img.getpixel((300, 590))) > 240
+
+
+def test_cutout_with_transparent_surround_lands_on_white():
+    cutout = Image.new("RGBA", (800, 800), (0, 0, 0, 0))
+    cutout.paste((200, 30, 30, 255), (300, 300, 500, 500))
+    img = decode(prepare_category_image(encode(cutout)).data).convert("RGB")
+    assert min(img.getpixel((20, 20))) > 240
+    assert img.getpixel((300, 300))[0] > 180
 
 
 def test_exif_rotation_is_applied():
