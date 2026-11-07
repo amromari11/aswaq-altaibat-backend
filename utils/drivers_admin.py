@@ -24,7 +24,7 @@ def _when(value) -> str:
 
 
 def availability_label(driver: dict) -> str:
-    return "متاح" if driver.get("is_available") else "غير متاح"
+    return "🟢 متاح" if driver.get("is_available") else "🔴 غير متاح"
 
 
 def driver_name(driver: dict) -> str:
@@ -120,15 +120,13 @@ def render_drivers_page() -> None:
             column_config={
                 "الاسم": st.column_config.TextColumn("الاسم", width="large"),
                 "الهاتف": st.column_config.TextColumn("الهاتف", width="medium"),
-                "الحالة": st.column_config.TextColumn("الحالة", width="medium"),
+                "الحالة": st.column_config.TextColumn("الحالة", width="medium", help="🟢 متاح · 🔴 غير متاح، كما يحددها السائق من التطبيق"),
                 "منذ": st.column_config.TextColumn("منذ", width="small"),
                 "طلبات نشطة": st.column_config.NumberColumn("طلبات نشطة", width="small", format="%d"),
             },
             alt="قائمة السائقين",
         )
         if st.button("تحديث", icon=":material/refresh:", key="drivers_refresh"):
-            db.fetch_drivers.clear()
-            db.fetch_active_driver_order_counts.clear()
             st.rerun()
 
     _render_promote()

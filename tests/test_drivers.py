@@ -65,7 +65,7 @@ def test_drivers_page_lists_available_first_with_active_orders(drivers_db):
     at = drivers_page()
     table = at.dataframe[0].value
     assert list(table["الاسم"]) == ["خالد", "سالم"]
-    assert list(table["الحالة"]) == ["متاح", "غير متاح"]
+    assert list(table["الحالة"]) == ["🟢 متاح", "🔴 غير متاح"]
     assert list(table["طلبات نشطة"]) == [0, 2]
     assert list(table["الهاتف"]) == ["—", "0791112233"]
     assert str(table["الهاتف"].dtype) == "string", "phones stay text (leading 0, no scientific notation)"
@@ -175,15 +175,15 @@ def test_demoting_switches_availability_off(monkeypatch):
 
 def test_fetch_drivers_is_none_without_019(monkeypatch):
     monkeypatch.setattr(db, "get_supabase", lambda: SimpleNamespace(table=lambda name: FakeQuery([], fail=MISSING)))
-    assert db.fetch_drivers.__wrapped__() is None
-    assert db.fetch_active_driver_order_counts.__wrapped__() == {}
+    assert db.fetch_drivers() is None
+    assert db.fetch_active_driver_order_counts() == {}
 
 
 def test_active_order_counts_group_by_driver(monkeypatch):
     log = []
     rows = [{"id": "o1", "driver_id": "a"}, {"id": "o2", "driver_id": "a"}, {"id": "o3", "driver_id": "b"}]
     monkeypatch.setattr(db, "get_supabase", lambda: SimpleNamespace(table=lambda name: FakeQuery(log, result=rows)))
-    assert db.fetch_active_driver_order_counts.__wrapped__() == {"a": 2, "b": 1}
+    assert db.fetch_active_driver_order_counts() == {"a": 2, "b": 1}
     assert ("in_", ("status", ["delivered", "cancelled"])) in log
 
 
@@ -250,7 +250,7 @@ def test_orders_table_shows_the_driver_column(orders_db):
 def test_assign_a_driver_lists_available_first(orders_db):
     at = _select(orders_page(), 0)
     box = at.selectbox(key="assign_driver_o1")
-    assert box.options[:3] == ["— بدون سائق —", "خالد · متاح", "سالم · غير متاح · 1 طلب نشط"]
+    assert box.options[:3] == ["— بدون سائق —", "خالد · 🟢 متاح", "سالم · 🔴 غير متاح · 1 طلب نشط"]
     box.select("drv-2")
     _select(at, 0)
     at.button(key="save_driver_o1").click()

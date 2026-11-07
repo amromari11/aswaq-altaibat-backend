@@ -932,9 +932,10 @@ def driver_mode_error_message(exc: Exception, action: str = "تعذر الحفظ
     return f"{action}: {exc}"
 
 
-@st.cache_data(ttl="10s")
 def fetch_drivers() -> list[dict] | None:
-    """Every driver profile, available ones first; None when migration 019 hasn't been applied."""
+    """Every driver profile, available ones first; None when migration 019 hasn't been applied.
+
+    Not cached: availability changes from the drivers' phones must show on the next rerun."""
     try:
         res = (
             get_supabase()
@@ -953,7 +954,6 @@ def fetch_drivers() -> list[dict] | None:
     return res.data or []
 
 
-@st.cache_data(ttl="10s")
 def fetch_active_driver_order_counts() -> dict[str, int]:
     """driver id -> number of assigned orders not yet delivered or cancelled ({} without 019)."""
     sb = get_supabase()
@@ -1012,7 +1012,6 @@ def set_profile_role(profile_id: str, role: str) -> None:
     res = get_supabase().table("profiles").update(fields).eq("id", profile_id).execute()
     if not (res.data or []):
         raise ValueError("profile_not_found")
-    fetch_drivers.clear()
     fetch_profiles.clear()
 
 
@@ -1029,4 +1028,3 @@ def assign_order_driver(order_id: str, driver_id: str | None) -> None:
     """Point the order at a driver (None unassigns). The database rejects non-drivers with not_a_driver."""
     get_supabase().table("orders").update({"driver_id": driver_id}).eq("id", order_id).execute()
     fetch_orders.clear()
-    fetch_active_driver_order_counts.clear()
