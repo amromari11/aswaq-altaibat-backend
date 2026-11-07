@@ -63,13 +63,15 @@ def test_drivers_page_without_019_explains_why(drivers_db):
 
 def test_drivers_page_lists_available_first_with_active_orders(drivers_db):
     at = drivers_page()
-    table = at.dataframe[0].value
-    assert list(table["الاسم"]) == ["خالد", "سالم"]
-    assert list(table["الحالة"]) == ["🟢 متاح", "🔴 غير متاح"]
-    assert list(table["طلبات نشطة"]) == [0, 2]
-    assert list(table["الهاتف"]) == ["—", "0791112233"]
-    assert str(table["الهاتف"].dtype) == "string", "phones stay text (leading 0, no scientific notation)"
-    assert list(table["منذ"]) == ["2026-11-07 10:30", "2026-11-07 09:00"]  # Amman time
+    assert not at.dataframe, "drivers are cards, not a table that clips columns"
+    names = [m.value for m in at.markdown if m.value.startswith("### ")]
+    assert names == ["### خالد", "### سالم"], "available first"
+    text = " ".join(m.value for m in at.markdown)
+    assert "🟢 متاح للتوصيل" in text and "🔴 غير متاح" in text
+    assert "`0791112233`" in text, "the full phone, leading 0 included"
+    assert "الطلبات النشطة المُسندة: **0**" in text and "الطلبات النشطة المُسندة: **2**" in text
+    captions = " ".join(c.value for c in at.caption)
+    assert "2026-11-07 10:30" in captions and "2026-11-07 09:00" in captions  # Amman time
     metrics = {m.label: m.value for m in at.metric}
     assert metrics == {"السائقون": "2", "متاحون الآن": "1", "طلبات نشطة مُسندة": "2"}
 
@@ -84,7 +86,7 @@ def test_drivers_page_with_no_drivers_still_offers_promotion(drivers_db):
 def test_promote_by_email(drivers_db):
     at = drivers_page()
     at.text_input[0].input("driver@example.com")
-    at.button[1].click()  # form submit (button[0] is refresh)
+    next(b for b in at.button if b.label == "ترقية إلى سائق").click()
     _run(at)
     assert drivers_db["promoted"] == ["driver@example.com"]
 
@@ -93,25 +95,29 @@ def test_promote_unknown_email_is_explained_in_arabic(drivers_db):
     drivers_db["fail"] = ValueError("user_not_found")
     at = drivers_page()
     at.text_input[0].input("nobody@example.com")
-    at.button[1].click()
+    next(b for b in at.button if b.label == "ترقية إلى سائق").click()
     _run(at)
     assert any("لا يوجد حساب بهذا البريد" in e.value for e in at.error)
 
 
 def test_demote_is_blocked_while_the_driver_has_active_orders(drivers_db):
     at = drivers_page()
-    at.selectbox(key="demote_driver_select").select("drv-1")
-    _run(at)
-    assert at.button(key="demote_driver").disabled
-    assert any("طلب نشط" in w.value for w in at.warning)
+    assert at.button(key="demote_drv-1").disabled
+    assert not at.button(key="demote_drv-2").disabled
 
 
 def test_demote_an_idle_driver(drivers_db):
     at = drivers_page()
-    assert at.selectbox(key="demote_driver_select").value == "drv-2"  # available first
-    at.button(key="demote_driver").click()
+    at.button(key="demote_drv-2").click()
     _run(at)
     assert drivers_db["roles"] == [("drv-2", "customer")]
+
+
+def test_a_driver_name_cannot_inject_markdown(drivers_db):
+    drivers_db["drivers"] = [{**drivers_db["drivers"][1], "full_name": "[click](http://evil.example) **x**"}]
+    at = drivers_page()
+    name = next(m.value for m in at.markdown if m.value.startswith("### "))
+    assert "](" not in name.replace("\\]\\(", "") and "\\[click\\]" in name
 
 
 # --- db helpers ---------------------------------------------------------------------
@@ -250,7 +256,7 @@ def test_orders_table_shows_the_driver_column(orders_db):
 def test_assign_a_driver_lists_available_first(orders_db):
     at = _select(orders_page(), 0)
     box = at.selectbox(key="assign_driver_o1")
-    assert box.options[:3] == ["— بدون سائق —", "خالد · 🟢 متاح", "سالم · 🔴 غير متاح · 1 طلب نشط"]
+    assert box.options[:3] == ["— بدون سائق —", "خالد · 🟢 متاح للتوصيل", "سالم · 🔴 غير متاح · 1 طلب نشط"]
     box.select("drv-2")
     _select(at, 0)
     at.button(key="save_driver_o1").click()
@@ -328,3 +334,4 @@ def test_points_rate_is_hidden_and_not_saved_without_019(settings_db):
     at.button[0].click()
     _run(at)
     assert "points_per_jod" not in settings_db["saved"][0]
+

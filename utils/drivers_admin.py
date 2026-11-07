@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 import streamlit as st
 
@@ -24,7 +26,12 @@ def _when(value) -> str:
 
 
 def availability_label(driver: dict) -> str:
-    return "🟢 متاح" if driver.get("is_available") else "🔴 غير متاح"
+    return "🟢 متاح للتوصيل" if driver.get("is_available") else "🔴 غير متاح"
+
+
+def _md(text: str) -> str:
+    """Escape Markdown so a name typed by a driver shows as plain text."""
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!|<>~:])", r"\\\1", text)
 
 
 def driver_name(driver: dict) -> str:
@@ -58,26 +65,37 @@ def _render_promote() -> None:
     st.rerun()
 
 
-def _render_demote(drivers: list[dict], counts: dict[str, int]) -> None:
+def _demote(driver_id: str) -> None:
+    try:
+        db.set_profile_role(driver_id, "customer")
+    except Exception as exc:
+        st.error(db.driver_mode_error_message(exc, "تعذر تغيير الدور"))
+        return
+    st.toast("أُعيد الحساب إلى عميل.", icon=":material/check_circle:")
+    st.rerun()
+
+
+def _render_driver_card(driver: dict, active: int) -> None:
+    """One driver: name, full phone, live status badge, active orders, and demotion."""
     with st.container(border=True):
-        st.subheader("إعادة سائق إلى عميل")
-        driver_id = st.selectbox(
-            "السائق",
-            options=[d["id"] for d in drivers],
-            format_func=lambda i: driver_name(next(d for d in drivers if d["id"] == i)),
-            key="demote_driver_select",
-        )
-        active = counts.get(driver_id, 0)
-        if active:
-            st.warning(f"لدى هذا السائق {active} طلب نشط — أعد إسناد طلباته من صفحة «الطلبات» قبل إلغاء دوره.")
-        if st.button("إعادة إلى عميل", icon=":material/person_remove:", disabled=bool(active), key="demote_driver"):
-            try:
-                db.set_profile_role(driver_id, "customer")
-            except Exception as exc:
-                st.error(db.driver_mode_error_message(exc, "تعذر تغيير الدور"))
-                return
-            st.toast("أُعيد الحساب إلى عميل.", icon=":material/check_circle:")
-            st.rerun()
+        st.markdown(f"### {_md(driver_name(driver))}")
+        on = bool(driver.get("is_available"))
+        status = availability_label(driver) + (" · أثناء توصيل" if driver.get("paused_for_delivery") else "")
+        st.badge(status, color="green" if on else "red")
+        phone = local_phone(driver.get("phone_number")) if driver.get("phone_number") else "—"
+        # Inline code keeps the number left-to-right and in one piece: 0798989867, never 7.9e+08.
+        st.markdown(f"📞 رقم الهاتف: `{phone}`")
+        st.markdown(f"📦 الطلبات النشطة المُسندة: **{active}**")
+        st.caption(f"🕒 آخر تغيير للحالة: {_when(driver.get('available_changed_at'))}")
+        if st.button(
+            "إلغاء رتبة سائق",
+            icon=":material/person_remove:",
+            key=f"demote_{driver['id']}",
+            disabled=bool(active),
+            help="أعد إسناد طلباته النشطة من صفحة «الطلبات» أولاً." if active else "يعود الحساب عميلاً عادياً ويختفي منه «وضع السائق».",
+            width="stretch",
+        ):
+            _demote(driver["id"])
 
 
 def render_drivers_page() -> None:
@@ -97,41 +115,16 @@ def render_drivers_page() -> None:
         a.metric("السائقون", len(drivers))
         b.metric("متاحون الآن", available)
         c.metric("طلبات نشطة مُسندة", sum(counts.get(d["id"], 0) for d in drivers))
-        table = pd.DataFrame(
-            [
-                {
-                    "الاسم": driver_name(d),
-                    "الهاتف": local_phone(d.get("phone_number")) if d.get("phone_number") else "—",
-                    "الحالة": availability_label(d) + (" (أثناء توصيل)" if d.get("paused_for_delivery") else ""),
-                    "منذ": _when(d.get("available_changed_at")),
-                    "طلبات نشطة": counts.get(d["id"], 0),
-                }
-                for d in drivers
-            ]
-        )
-        # Text, never a number: keeps the leading 0 and can't turn into 7.9e+08.
-        table["الهاتف"] = table["الهاتف"].astype("string")
-        st.dataframe(
-            table,
-            hide_index=True,
-            width="stretch",
-            # Explicit widths so name, phone and status are never clipped; the
-            # short columns give up the space.
-            column_config={
-                "الاسم": st.column_config.TextColumn("الاسم", width="large"),
-                "الهاتف": st.column_config.TextColumn("الهاتف", width="medium"),
-                "الحالة": st.column_config.TextColumn("الحالة", width="medium", help="🟢 متاح · 🔴 غير متاح، كما يحددها السائق من التطبيق"),
-                "منذ": st.column_config.TextColumn("منذ", width="small"),
-                "طلبات نشطة": st.column_config.NumberColumn("طلبات نشطة", width="small", format="%d"),
-            },
-            alt="قائمة السائقين",
-        )
+        # Cards, two per row: nothing is clipped the way table columns were.
+        for start in range(0, len(drivers), 2):
+            cols = st.columns(2)
+            for col, d in zip(cols, drivers[start : start + 2]):
+                with col:
+                    _render_driver_card(d, counts.get(d["id"], 0))
         if st.button("تحديث", icon=":material/refresh:", key="drivers_refresh"):
             st.rerun()
 
     _render_promote()
-    if drivers:
-        _render_demote(drivers, counts)
 
 
 # ---------------------------------------------------------------------------
