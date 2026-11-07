@@ -58,6 +58,18 @@ def render_store_settings_page() -> None:
         pickup = k.toggle("السماح بالاستلام من الفرع", value=bool(settings.get("pickup_enabled", True)))
         scheduling = m.toggle("السماح بجدولة موعد", value=bool(settings.get("scheduling_enabled", True)))
 
+        # Migration 019: only shown (and saved) once the column exists.
+        has_points = "points_per_jod" in settings
+        points = None
+        if has_points:
+            st.subheader("نقاط الولاء")
+            points = st.number_input(
+                "نقاط لكل دينار من قيمة المشتريات",
+                min_value=0.0, max_value=100.0, step=0.5, format="%.2f",
+                value=float(settings.get("points_per_jod") if settings.get("points_per_jod") is not None else 1),
+                help="تُحتسب عند تسليم الطلب على قيمة المنتجات بعد الخصم، دون رسوم التوصيل. 0 يوقف منح النقاط.",
+            )
+
         saved = st.form_submit_button("حفظ الإعدادات", type="primary", icon=":material/save:")
 
     if not saved:
@@ -85,6 +97,7 @@ def render_store_settings_page() -> None:
                 "pickup_ready_minutes": int(ready),
                 "pickup_enabled": bool(pickup),
                 "scheduling_enabled": bool(scheduling),
+                **({"points_per_jod": round(float(points), 2)} if has_points else {}),
             }
         )
     except Exception as exc:

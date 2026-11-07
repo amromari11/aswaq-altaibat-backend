@@ -385,7 +385,9 @@ def fetch_products() -> list[dict]:
             .select(
                 "id, name, name_ar, description, sku, unit, price, discount_price, "
                 "category_id, stock_quantity, stock_status, is_weekly_offer, "
-                "is_app_exclusive, is_active, created_at, categories(name, name_ar)"
+                # Explicit FK: since 012, products also points at categories through
+                # legacy_category_id, and a bare categories(...) embed is ambiguous (PGRST201).
+                "is_app_exclusive, is_active, created_at, categories!products_category_id_fkey(name, name_ar)"
             )
             .order("created_at", desc=True)
             .execute()
@@ -554,7 +556,14 @@ def fetch_orders() -> list[dict]:
         res = None
         # Newest columns first; each older tier is what a database without the newer migration has:
         # 016 added driver_name / driver_phone, 015 added order_type / scheduled_time.
-        for extra in (", order_type, scheduled_time, driver_name, driver_phone", ", order_type, scheduled_time", ""):
+        # 019 added driver_id and the delivery timestamps.
+        tiers = (
+            ", order_type, scheduled_time, driver_name, driver_phone, driver_id, picked_up_at, delivered_at, paid_at",
+            ", order_type, scheduled_time, driver_name, driver_phone",
+            ", order_type, scheduled_time",
+            "",
+        )
+        for extra in tiers:
             try:
                 res = sb.table("orders").select(_ORDER_FIELDS + extra).order("created_at", desc=True).execute()
                 break
@@ -611,7 +620,10 @@ def _is_missing_object(exc: Exception) -> bool:
     text = str(exc)
     return any(
         marker in text
-        for marker in ("PGRST202", "PGRST205", "Could not find the function", "Could not find the table", "does not exist")
+        for marker in (
+            "PGRST202", "PGRST204", "PGRST205", "42703",
+            "Could not find the function", "Could not find the table", "does not exist",
+        )
     )
 
 
@@ -888,3 +900,133 @@ def fetch_store_settings() -> dict | None:
 def update_store_settings(fields: dict) -> None:
     get_supabase().table("store_settings").update({**fields, "updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", True).execute()
     fetch_store_settings.clear()
+
+
+# ---------------------------------------------------------------------------
+# Drivers (migration 019): profiles.role = 'driver', their live availability, and orders.driver_id.
+# ---------------------------------------------------------------------------
+
+DRIVER_MODE_MIGRATION_HINT = (
+    "وضع السائق غير مفعّل بعد في قاعدة البيانات — شغّل الملف "
+    "`supabase/019_driver_mode.sql` من SQL Editor في Supabase ثم أعد تحميل الصفحة."
+)
+
+ACTIVE_ORDER_EXCLUDED = ("delivered", "cancelled")
+
+_DRIVER_ROLE_ERRORS_AR = {
+    "not_a_driver": "هذا الحساب ليس سائقاً — رقِّه إلى سائق من صفحة «السائقون» أولاً.",
+    "user_not_found": "لا يوجد حساب بهذا البريد. على السائق تسجيل الدخول إلى التطبيق مرة واحدة أولاً.",
+    "profile_not_found": "الحساب موجود لكن ليس له ملف في التطبيق بعد — اطلب منه فتح التطبيق وتسجيل الدخول مرة.",
+    "invalid_email": "أدخل بريداً إلكترونياً صحيحاً.",
+}
+
+
+def driver_mode_error_message(exc: Exception, action: str = "تعذر الحفظ") -> str:
+    """Arabic explanation for a failed driver-mode call (assignment, promotion, demotion)."""
+    text = str(exc)
+    for code, message in _DRIVER_ROLE_ERRORS_AR.items():
+        if code in text:
+            return message
+    if _is_missing_object(exc):
+        return DRIVER_MODE_MIGRATION_HINT
+    return f"{action}: {exc}"
+
+
+@st.cache_data(ttl="10s")
+def fetch_drivers() -> list[dict] | None:
+    """Every driver profile, available ones first; None when migration 019 hasn't been applied."""
+    try:
+        res = (
+            get_supabase()
+            .table("profiles")
+            .select("id, full_name, phone_number, role, is_available, paused_for_delivery, available_changed_at")
+            .eq("role", "driver")
+            .order("is_available", desc=True)
+            .order("full_name")
+            .execute()
+        )
+    except Exception as exc:
+        if _is_missing_object(exc):
+            return None
+        st.error(f"تعذر تحميل السائقين: {exc}")
+        return []
+    return res.data or []
+
+
+@st.cache_data(ttl="10s")
+def fetch_active_driver_order_counts() -> dict[str, int]:
+    """driver id -> number of assigned orders not yet delivered or cancelled ({} without 019)."""
+    sb = get_supabase()
+    counts: dict[str, int] = {}
+    start, page_size = 0, 1000
+    try:
+        while True:
+            rows = (
+                sb.table("orders")
+                .select("id, driver_id")
+                .not_.is_("driver_id", "null")
+                .not_.in_("status", list(ACTIVE_ORDER_EXCLUDED))
+                .order("id")
+                .range(start, start + page_size - 1)
+                .execute()
+                .data
+                or []
+            )
+            for row in rows:
+                counts[row["driver_id"]] = counts.get(row["driver_id"], 0) + 1
+            if len(rows) < page_size:
+                return counts
+            start += page_size
+    except Exception as exc:
+        if not _is_missing_object(exc):
+            st.error(f"تعذر تحميل طلبات السائقين: {exc}")
+        return {}
+
+
+def find_auth_user_by_email(email: str) -> dict | None:
+    """The auth user (id, email) with this email, via the service-role admin API; None if there is none.
+
+    The admin API has no email filter, so this pages through the users (50 per page by default; 200 here)."""
+    wanted = (email or "").strip().lower()
+    if "@" not in wanted or len(wanted) > 320:
+        raise ValueError("invalid_email")
+    admin = get_supabase().auth.admin
+    page = 1
+    while True:
+        users = admin.list_users(page=page, per_page=200) or []
+        for user in users:
+            if (getattr(user, "email", None) or "").lower() == wanted:
+                return {"id": user.id, "email": user.email}
+        if len(users) < 200:
+            return None
+        page += 1
+
+
+def set_profile_role(profile_id: str, role: str) -> None:
+    """Make a profile a 'driver' or turn it back into a 'customer'. Demoting also switches availability off."""
+    if role not in ("driver", "customer"):
+        raise ValueError(f"unsupported role {role!r}")
+    fields: dict = {"role": role}
+    if role == "customer":
+        fields.update(is_available=False, paused_for_delivery=False, available_changed_at=datetime.now(timezone.utc).isoformat())
+    res = get_supabase().table("profiles").update(fields).eq("id", profile_id).execute()
+    if not (res.data or []):
+        raise ValueError("profile_not_found")
+    fetch_drivers.clear()
+    fetch_profiles.clear()
+
+
+def promote_to_driver(email: str) -> dict:
+    """Look the signed-in user up by email and make their profile a driver; returns {id, email}."""
+    user = find_auth_user_by_email(email)
+    if user is None:
+        raise ValueError("user_not_found")
+    set_profile_role(user["id"], "driver")
+    return user
+
+
+def assign_order_driver(order_id: str, driver_id: str | None) -> None:
+    """Point the order at a driver (None unassigns). The database rejects non-drivers with not_a_driver."""
+    get_supabase().table("orders").update({"driver_id": driver_id}).eq("id", order_id).execute()
+    fetch_orders.clear()
+    fetch_active_driver_order_counts.clear()

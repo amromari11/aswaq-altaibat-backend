@@ -6,17 +6,25 @@ import streamlit as st
 from utils.db import (
     ORDER_STATUS_LABELS_AR,
     ORDER_STATUSES,
+    fetch_active_driver_order_counts,
+    fetch_drivers,
     fetch_order_items,
     fetch_orders,
     update_order_status,
 )
 from utils.driver_panel import render_driver_panel
+from utils.drivers_admin import driver_name, order_driver_rows, render_driver_assignment
 from utils.fulfillment import ORDER_TYPE_LABELS_AR, order_type, order_type_label, schedule_label, status_label
 from utils.insights import local_phone, order_customer, to_amman
 
 st.caption("متابعة الطلبات وتحديث حالتها")
 
 orders = fetch_orders()
+# Driver mode (migration 019): orders only carry driver_id once it is applied, so an older database never
+# runs these queries, and drivers stays None (the assignment box then shows a hint to run 019).
+drivers = fetch_drivers() if any("driver_id" in o for o in orders) else None
+driver_names = {d["id"]: driver_name(d) for d in drivers or []}
+driver_counts = fetch_active_driver_order_counts() if drivers is not None else {}
 
 if not orders:
     st.info("لا توجد طلبات بعد.")
@@ -55,6 +63,15 @@ else:
                     "الإجمالي": float(o.get("total_price") or 0),
                     "العنوان": o.get("delivery_address") or "—",
                     "التاريخ": o.get("created_at"),
+                    **(
+                        {}
+                        if drivers is None
+                        else {
+                            "السائق": "—"
+                            if order_type(o) == "pickup"
+                            else driver_names.get(o.get("driver_id"), "سائق غير معروف" if o.get("driver_id") else "غير مُسند")
+                        }
+                    ),
                 }
                 for o in filtered
             ]
@@ -97,6 +114,7 @@ else:
                         ),
                         "طريقة الدفع": order.get("payment_method") or "—",
                         "ملاحظات": order.get("notes") or "—",
+                        **order_driver_rows(order, drivers),
                     },
                     border="horizontal",
                     width="content",
@@ -122,6 +140,8 @@ else:
                     st.dataframe(item_df, hide_index=True, width="stretch", alt="عناصر الطلب")
                 else:
                     st.caption("لا توجد عناصر مسجلة لهذا الطلب.")
+
+                render_driver_assignment(order, drivers, driver_counts)
 
                 if order["status"] == "out_for_delivery" and kind == "delivery":
                     render_driver_panel(order)

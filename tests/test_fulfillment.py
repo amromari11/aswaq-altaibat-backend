@@ -277,7 +277,7 @@ def test_driver_panel_explains_a_database_without_016(driver_db):
 
 
 def test_orders_load_on_a_database_without_the_newer_columns(monkeypatch):
-    """fetch_orders falls back tier by tier: 016 columns, then 015's, then the original ones."""
+    """fetch_orders falls back tier by tier: 019 columns, then 016's, then 015's, then the original ones."""
     seen = []
 
     class Q:
@@ -308,4 +308,5 @@ def test_orders_load_on_a_database_without_the_newer_columns(monkeypatch):
     monkeypatch.setattr(db, "get_supabase", lambda: C())
     rows = db.fetch_orders.__wrapped__() if hasattr(db.fetch_orders, "__wrapped__") else db.fetch_orders()
     assert rows == [{"id": "o1"}]
-    assert ["driver_name" in c for c in seen] == [True, False, False] and "order_type" in seen[1] and "order_type" not in seen[2]
+    assert ["driver_id" in c for c in seen] == [True, False, False, False]
+    assert ["driver_name" in c for c in seen] == [True, True, False, False] and "order_type" in seen[2] and "order_type" not in seen[3]
