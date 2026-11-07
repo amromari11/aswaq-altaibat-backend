@@ -68,6 +68,7 @@ def test_drivers_page_lists_available_first_with_active_orders(drivers_db):
     assert list(table["الحالة"]) == ["متاح", "غير متاح"]
     assert list(table["طلبات نشطة"]) == [0, 2]
     assert list(table["الهاتف"]) == ["—", "0791112233"]
+    assert str(table["الهاتف"].dtype) == "string", "phones stay text (leading 0, no scientific notation)"
     assert list(table["منذ"]) == ["2026-11-07 10:30", "2026-11-07 09:00"]  # Amman time
     metrics = {m.label: m.value for m in at.metric}
     assert metrics == {"السائقون": "2", "متاحون الآن": "1", "طلبات نشطة مُسندة": "2"}

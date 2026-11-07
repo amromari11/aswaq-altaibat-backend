@@ -97,21 +97,33 @@ def render_drivers_page() -> None:
         a.metric("السائقون", len(drivers))
         b.metric("متاحون الآن", available)
         c.metric("طلبات نشطة مُسندة", sum(counts.get(d["id"], 0) for d in drivers))
+        table = pd.DataFrame(
+            [
+                {
+                    "الاسم": driver_name(d),
+                    "الهاتف": local_phone(d.get("phone_number")) if d.get("phone_number") else "—",
+                    "الحالة": availability_label(d) + (" (أثناء توصيل)" if d.get("paused_for_delivery") else ""),
+                    "منذ": _when(d.get("available_changed_at")),
+                    "طلبات نشطة": counts.get(d["id"], 0),
+                }
+                for d in drivers
+            ]
+        )
+        # Text, never a number: keeps the leading 0 and can't turn into 7.9e+08.
+        table["الهاتف"] = table["الهاتف"].astype("string")
         st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "الاسم": driver_name(d),
-                        "الهاتف": local_phone(d.get("phone_number")) if d.get("phone_number") else "—",
-                        "الحالة": availability_label(d) + (" (أثناء توصيل)" if d.get("paused_for_delivery") else ""),
-                        "منذ": _when(d.get("available_changed_at")),
-                        "طلبات نشطة": counts.get(d["id"], 0),
-                    }
-                    for d in drivers
-                ]
-            ),
+            table,
             hide_index=True,
             width="stretch",
+            # Explicit widths so name, phone and status are never clipped; the
+            # short columns give up the space.
+            column_config={
+                "الاسم": st.column_config.TextColumn("الاسم", width="large"),
+                "الهاتف": st.column_config.TextColumn("الهاتف", width="medium"),
+                "الحالة": st.column_config.TextColumn("الحالة", width="medium"),
+                "منذ": st.column_config.TextColumn("منذ", width="small"),
+                "طلبات نشطة": st.column_config.NumberColumn("طلبات نشطة", width="small", format="%d"),
+            },
             alt="قائمة السائقين",
         )
         if st.button("تحديث", icon=":material/refresh:", key="drivers_refresh"):
