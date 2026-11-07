@@ -10,6 +10,8 @@ clears the relevant cache before returning so the next read is fresh.
 
 from __future__ import annotations
 
+import re
+
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -918,7 +920,16 @@ _DRIVER_ROLE_ERRORS_AR = {
     "user_not_found": "لا يوجد حساب بهذا البريد. على السائق تسجيل الدخول إلى التطبيق مرة واحدة أولاً.",
     "profile_not_found": "الحساب موجود لكن ليس له ملف في التطبيق بعد — اطلب منه فتح التطبيق وتسجيل الدخول مرة.",
     "invalid_email": "أدخل بريداً إلكترونياً صحيحاً.",
+    "invalid_full_name_ar": "الاسم بالعربي بين حرفين و60 حرفاً.",
+    "invalid_vehicle_type": "نوع المركبة: سكوتر أو سيارة.",
+    "invalid_vehicle_model": "موديل المركبة حتى 40 حرفاً.",
+    "invalid_vehicle_color": "لون المركبة حتى 30 حرفاً.",
+    "invalid_plate_number": "رقم اللوحة أرقام فقط، مثل 12-34567.",
 }
+
+DRIVER_VEHICLE_MIGRATION_HINT = (
+    "لحفظ الاسم بالعربي وبيانات المركبة شغّل ملف supabase/021_driver_vehicle.sql في محرر SQL على Supabase أولاً."
+)
 
 
 def driver_mode_error_message(exc: Exception, action: str = "تعذر الحفظ") -> str:
@@ -940,18 +951,70 @@ def fetch_drivers() -> list[dict] | None:
         res = (
             get_supabase()
             .table("profiles")
-            .select("id, full_name, phone_number, role, is_available, paused_for_delivery, available_changed_at")
+            .select(_DRIVER_COLUMNS + ", " + _VEHICLE_COLUMNS)
             .eq("role", "driver")
             .order("is_available", desc=True)
             .order("full_name")
             .execute()
         )
     except Exception as exc:
-        if _is_missing_object(exc):
-            return None
-        st.error(f"تعذر تحميل السائقين: {exc}")
-        return []
+        if not _is_missing_object(exc):
+            st.error(f"تعذر تحميل السائقين: {exc}")
+            return []
+        # Without 021 the vehicle columns are missing: list the drivers anyway.
+        try:
+            res = (
+                get_supabase()
+                .table("profiles")
+                .select(_DRIVER_COLUMNS)
+                .eq("role", "driver")
+                .order("is_available", desc=True)
+                .order("full_name")
+                .execute()
+            )
+        except Exception as exc2:
+            if _is_missing_object(exc2):
+                return None
+            st.error(f"تعذر تحميل السائقين: {exc2}")
+            return []
     return res.data or []
+
+
+_DRIVER_COLUMNS = "id, full_name, phone_number, role, is_available, paused_for_delivery, available_changed_at"
+_VEHICLE_COLUMNS = "full_name_ar, vehicle_type, vehicle_model, vehicle_color, plate_number"
+_PLATE_RE = re.compile(r"^[0-9]{1,3}-?[0-9]{1,6}$")
+
+
+def clean_driver_details(full_name_ar: str, vehicle_type: str | None, vehicle_model: str, vehicle_color: str, plate_number: str) -> dict:
+    """Validate the edit form the way 021's constraints do; blanks clear a field.
+    Raises ValueError(<code>) with a code from _DRIVER_ROLE_ERRORS_AR."""
+    def blank(v: str | None) -> str | None:
+        v = (v or "").strip()
+        return v or None
+
+    name, model, color = blank(full_name_ar), blank(vehicle_model), blank(vehicle_color)
+    plate = blank(plate_number)
+    if plate:
+        plate = plate.replace(" ", "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    if name is not None and not 2 <= len(name) <= 60:
+        raise ValueError("invalid_full_name_ar")
+    if vehicle_type not in (None, "scooter", "car"):
+        raise ValueError("invalid_vehicle_type")
+    if model is not None and len(model) > 40:
+        raise ValueError("invalid_vehicle_model")
+    if color is not None and len(color) > 30:
+        raise ValueError("invalid_vehicle_color")
+    if plate is not None and not _PLATE_RE.match(plate):
+        raise ValueError("invalid_plate_number")
+    return {"full_name_ar": name, "vehicle_type": vehicle_type, "vehicle_model": model,
+            "vehicle_color": color, "plate_number": plate}
+
+
+def update_driver_details(profile_id: str, fields: dict) -> None:
+    """Save a driver's Arabic name and vehicle (021). ``fields`` comes from clean_driver_details."""
+    res = get_supabase().table("profiles").update(fields).eq("id", profile_id).execute()
+    if not (res.data or []):
+        raise ValueError("profile_not_found")
 
 
 def fetch_active_driver_order_counts() -> dict[str, int]:

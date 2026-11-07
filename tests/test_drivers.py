@@ -85,7 +85,7 @@ def test_drivers_page_with_no_drivers_still_offers_promotion(drivers_db):
 
 def test_promote_by_email(drivers_db):
     at = drivers_page()
-    at.text_input[0].input("driver@example.com")
+    next(t for t in at.text_input if t.label == "البريد الإلكتروني للحساب").input("driver@example.com")
     next(b for b in at.button if b.label == "ترقية إلى سائق").click()
     _run(at)
     assert drivers_db["promoted"] == ["driver@example.com"]
@@ -94,7 +94,7 @@ def test_promote_by_email(drivers_db):
 def test_promote_unknown_email_is_explained_in_arabic(drivers_db):
     drivers_db["fail"] = ValueError("user_not_found")
     at = drivers_page()
-    at.text_input[0].input("nobody@example.com")
+    next(t for t in at.text_input if t.label == "البريد الإلكتروني للحساب").input("nobody@example.com")
     next(b for b in at.button if b.label == "ترقية إلى سائق").click()
     _run(at)
     assert any("لا يوجد حساب بهذا البريد" in e.value for e in at.error)
@@ -118,6 +118,89 @@ def test_a_driver_name_cannot_inject_markdown(drivers_db):
     at = drivers_page()
     name = next(m.value for m in at.markdown if m.value.startswith("### "))
     assert "](" not in name.replace("\\]\\(", "") and "\\[click\\]" in name
+
+
+def test_cards_show_the_arabic_name_and_vehicle(drivers_db):
+    drivers_db["drivers"] = [{**KHALED, "full_name_ar": "خالد أحمد", "vehicle_type": "scooter", "vehicle_model": "SYM",
+                              "vehicle_color": "أبيض", "plate_number": "12-34567"}]
+    at = drivers_page()
+    text = " ".join(m.value for m in at.markdown)
+    assert "### خالد أحمد" in text
+    assert "🛵 سكوتر SYM \\- أبيض" in text  # Markdown-escaped dash
+    assert "`12-34567`" in text
+
+
+def test_a_card_without_vehicle_says_so(drivers_db):
+    at = drivers_page()
+    assert any("المركبة: لم تُحدَّد بعد" in m.value for m in at.markdown)
+
+
+def test_edit_saves_the_arabic_name_and_vehicle(drivers_db, monkeypatch):
+    saved = []
+    monkeypatch.setattr(db, "update_driver_details", lambda pid, fields: saved.append((pid, fields)))
+    drivers_db["drivers"] = [KHALED]
+    at = drivers_page()
+    by_label = {t.label: t for t in at.text_input}
+    by_label["الاسم بالعربي"].input(" خالد أحمد ")
+    by_label["الموديل"].input("SYM")
+    by_label["اللون"].input("أبيض")
+    by_label["رقم اللوحة"].input("١٢-٣٤٥٦٧")  # Arabic digits are accepted
+    at.selectbox[0].select("scooter")
+    next(b for b in at.button if b.label == "حفظ").click()
+    _run(at)
+    assert saved == [(KHALED["id"], {"full_name_ar": "خالد أحمد", "vehicle_type": "scooter", "vehicle_model": "SYM",
+                                     "vehicle_color": "أبيض", "plate_number": "12-34567"})]
+
+
+def test_a_bad_plate_is_explained_in_arabic(drivers_db, monkeypatch):
+    monkeypatch.setattr(db, "update_driver_details", lambda pid, fields: pytest.fail("must not save"))
+    drivers_db["drivers"] = [KHALED]
+    at = drivers_page()
+    next(t for t in at.text_input if t.label == "رقم اللوحة").input("ABC")
+    next(b for b in at.button if b.label == "حفظ").click()
+    _run(at)
+    assert any("رقم اللوحة أرقام فقط" in e.value for e in at.error)
+
+
+def test_clean_driver_details_blanks_clear_fields():
+    assert db.clean_driver_details("", None, " ", "", "") == {
+        "full_name_ar": None, "vehicle_type": None, "vehicle_model": None, "vehicle_color": None, "plate_number": None}
+    with pytest.raises(ValueError, match="invalid_vehicle_type"):
+        db.clean_driver_details("", "bus", "", "", "")
+    with pytest.raises(ValueError, match="invalid_full_name_ar"):
+        db.clean_driver_details("خ", None, "", "", "")
+
+
+def test_fetch_drivers_without_021_still_lists_drivers(monkeypatch):
+    calls = []
+
+    class Q:
+        def __init__(self, cols):
+            self.cols = cols
+
+        def eq(self, *a):
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def execute(self):
+            calls.append(self.cols)
+            if "plate_number" in self.cols:
+                raise Exception("column profiles.plate_number does not exist (42703)")
+
+            class R:
+                data = [{"id": "d1", "full_name": "X"}]
+
+            return R()
+
+    class C:
+        def table(self, name):
+            return type("T", (), {"select": lambda self, cols: Q(cols)})()
+
+    monkeypatch.setattr(db, "get_supabase", lambda: C())
+    assert db.fetch_drivers() == [{"id": "d1", "full_name": "X"}]
+    assert ["plate_number" in c for c in calls] == [True, False]
 
 
 # --- db helpers ---------------------------------------------------------------------

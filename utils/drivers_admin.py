@@ -35,7 +35,20 @@ def _md(text: str) -> str:
 
 
 def driver_name(driver: dict) -> str:
-    return (driver.get("full_name") or "").strip() or "سائق بدون اسم"
+    """The Arabic name when the shop entered one (021), else the account name."""
+    return (driver.get("full_name_ar") or "").strip() or (driver.get("full_name") or "").strip() or "سائق بدون اسم"
+
+
+VEHICLE_TYPES = {"scooter": "🛵 سكوتر", "car": "🚗 سيارة"}
+
+
+def vehicle_line(driver: dict) -> str | None:
+    """'🛵 سكوتر SYM - أبيض', or None when nothing about the vehicle is known."""
+    kind = VEHICLE_TYPES.get(driver.get("vehicle_type") or "")
+    details = " - ".join(v.strip() for v in (driver.get("vehicle_model"), driver.get("vehicle_color")) if v and v.strip())
+    if not kind and not details:
+        return None
+    return " ".join(p for p in (kind or "🚘", details) if p)
 
 
 def sorted_drivers(drivers: list[dict]) -> list[dict]:
@@ -75,6 +88,33 @@ def _demote(driver_id: str) -> None:
     st.rerun()
 
 
+def _render_edit(driver: dict) -> None:
+    """Arabic name and vehicle details: what the customer sees on the tracking card."""
+    with st.expander("✏️ تعديل الاسم والمركبة"):
+        with st.form(f"edit_driver_{driver['id']}", border=False):
+            name_ar = st.text_input("الاسم بالعربي", value=driver.get("full_name_ar") or "", placeholder="خالد أحمد")
+            types = [None, "scooter", "car"]
+            vehicle_type = st.selectbox(
+                "نوع المركبة",
+                options=types,
+                index=types.index(driver.get("vehicle_type")) if driver.get("vehicle_type") in types else 0,
+                format_func=lambda t: "— غير محدد —" if t is None else VEHICLE_TYPES[t],
+            )
+            model = st.text_input("الموديل", value=driver.get("vehicle_model") or "", placeholder="SYM")
+            color = st.text_input("اللون", value=driver.get("vehicle_color") or "", placeholder="أبيض")
+            plate = st.text_input("رقم اللوحة", value=driver.get("plate_number") or "", placeholder="12-34567")
+            saved = st.form_submit_button("حفظ", type="primary", icon=":material/save:")
+        if not saved:
+            return
+        try:
+            db.update_driver_details(driver["id"], db.clean_driver_details(name_ar, vehicle_type, model, color, plate))
+        except Exception as exc:
+            st.error(db.DRIVER_VEHICLE_MIGRATION_HINT if db._is_missing_object(exc) else db.driver_mode_error_message(exc))
+            return
+        st.toast("حُفظت بيانات السائق.", icon=":material/check_circle:")
+        st.rerun()
+
+
 def _render_driver_card(driver: dict, active: int) -> None:
     """One driver: name, full phone, live status badge, active orders, and demotion."""
     with st.container(border=True):
@@ -85,8 +125,15 @@ def _render_driver_card(driver: dict, active: int) -> None:
         phone = local_phone(driver.get("phone_number")) if driver.get("phone_number") else "—"
         # Inline code keeps the number left-to-right and in one piece: 0798989867, never 7.9e+08.
         st.markdown(f"📞 رقم الهاتف: `{phone}`")
+        vehicle = vehicle_line(driver)
+        st.markdown(f"{_md(vehicle) if vehicle else '🚘 المركبة: لم تُحدَّد بعد'}")
+        if driver.get("plate_number"):
+            st.markdown(f"🔢 رقم اللوحة: `{driver['plate_number']}`")
         st.markdown(f"📦 الطلبات النشطة المُسندة: **{active}**")
         st.caption(f"🕒 آخر تغيير للحالة: {_when(driver.get('available_changed_at'))}")
+        if (driver.get("full_name_ar") or "").strip() and (driver.get("full_name") or "").strip():
+            st.caption(f"اسم الحساب: {_md(driver['full_name'].strip())}")
+        _render_edit(driver)
         if st.button(
             "إلغاء رتبة سائق",
             icon=":material/person_remove:",
